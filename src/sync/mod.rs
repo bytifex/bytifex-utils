@@ -5,3 +5,4 @@ pub mod callback_event;
 pub mod mpcc;
 pub mod observable_fn;
 pub mod types;
+pub mod usage_counter;
