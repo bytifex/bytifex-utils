@@ -12,10 +12,12 @@
 
 use std::{ops::Deref, sync::Arc};
 
-use tokio::sync::{Notify, RwLock, RwLockReadGuard};
+use tokio::sync::Notify;
+
+use super::types::{arc_rw_lock_new, ArcRwLock, RwLockReadGuard};
 
 pub struct AsyncItem<T: Send> {
-    value: Arc<RwLock<Option<T>>>,
+    value: ArcRwLock<Option<T>>,
     // todo!("use an async condvar")
     notify: Arc<Notify>,
 }
@@ -54,20 +56,20 @@ impl<T: Send> Default for AsyncItem<T> {
 impl<T: Send> AsyncItem<T> {
     pub fn new() -> Self {
         Self {
-            value: Arc::new(RwLock::new(None)),
+            value: arc_rw_lock_new(None),
             notify: Arc::new(Notify::new()),
         }
     }
 
     pub async fn unset(&self) {
-        let mut value_guard = self.value.write().await;
+        let mut value_guard = self.value.write();
         *value_guard = None;
         self.notify.notify_waiters();
         drop(value_guard);
     }
 
     pub async fn set(&self, value: T) {
-        let mut value_guard = self.value.write().await;
+        let mut value_guard = self.value.write();
         *value_guard = Some(value);
         self.notify.notify_waiters();
         drop(value_guard);
@@ -75,14 +77,20 @@ impl<T: Send> AsyncItem<T> {
 
     pub async fn read(&self) -> AsyncItemReadGuard<T> {
         loop {
-            let value_guard = self.value.read().await;
-            if value_guard.is_some() {
-                break AsyncItemReadGuard { inner: value_guard };
+            if let Some(guard) = self.try_read() {
+                break guard;
             }
 
-            let notify_task = self.notify.notified();
-            drop(value_guard);
-            notify_task.await;
+            self.notify.notified().await;
+        }
+    }
+
+    pub fn try_read(&self) -> Option<AsyncItemReadGuard<T>> {
+        let value_guard = self.value.read();
+        if value_guard.is_some() {
+            Some(AsyncItemReadGuard { inner: value_guard })
+        } else {
+            None
         }
     }
 }
