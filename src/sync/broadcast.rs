@@ -1,14 +1,21 @@
 #![allow(clippy::type_complexity)]
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
+
+use tokio::sync::Notify;
 
 use crate::containers::object_pool::{ObjectPool, ObjectPoolIndex};
 
-use super::types::{arc_mutex_new, ArcMutex};
+use super::{
+    types::{arc_mutex_new, ArcMutex},
+    usage_counter::{UsageCounter, UsageCounterWatcher},
+};
 
+#[derive(Clone)]
 struct ReceiverQueue<T> {
-    queue: VecDeque<T>,
-    is_stopped: bool,
+    queue: ArcMutex<VecDeque<T>>,
+    is_stopped: ArcMutex<bool>,
+    notify: Arc<Notify>,
 }
 
 #[derive(Clone)]
@@ -16,7 +23,7 @@ struct ReceiverQueueList<T>
 where
     T: Clone,
 {
-    receiver_queues: ArcMutex<ObjectPool<ArcMutex<ReceiverQueue<T>>>>,
+    receiver_queues: ArcMutex<ObjectPool<ReceiverQueue<T>>>,
     to_be_removed: ArcMutex<Vec<ObjectPoolIndex>>,
 }
 
@@ -26,6 +33,7 @@ where
     T: Clone,
 {
     receiver_queues: ReceiverQueueList<T>,
+    usage_counter: UsageCounter,
 }
 
 pub struct Receiver<T>
@@ -34,7 +42,8 @@ where
 {
     receiver_queues: ReceiverQueueList<T>,
     queue_id: ObjectPoolIndex,
-    queue: ArcMutex<ReceiverQueue<T>>,
+    queue: ReceiverQueue<T>,
+    usage_counter_watcher: UsageCounterWatcher,
 }
 
 impl<T> ReceiverQueue<T>
@@ -43,9 +52,19 @@ where
 {
     pub fn new() -> Self {
         Self {
-            queue: VecDeque::new(),
-            is_stopped: false,
+            queue: arc_mutex_new(VecDeque::new()),
+            is_stopped: arc_mutex_new(false),
+            notify: Arc::new(Notify::new()),
         }
+    }
+
+    fn add_object_if_not_stopped(&self, object: T) {
+        let mut queue_guard = self.queue.lock();
+        if !*self.is_stopped.lock() {
+            queue_guard.push_back(object);
+            self.notify.notify_waiters();
+        }
+        drop(queue_guard);
     }
 }
 
@@ -86,28 +105,23 @@ where
     pub fn new() -> Self {
         Self {
             receiver_queues: ReceiverQueueList::new(),
+            usage_counter: UsageCounter::new(),
         }
     }
 
     pub fn send(&self, object: T) {
         self.receiver_queues.handle_to_be_removed();
         for queue in self.receiver_queues.receiver_queues.lock().iter() {
-            let mut queue_guard = queue.lock();
-            if !queue_guard.is_stopped {
-                queue_guard.queue.push_back(object.clone());
-            }
+            queue.add_object_if_not_stopped(object.clone());
         }
     }
 
     pub fn send_directly(&self, object: T, receiver: &Receiver<T>) {
-        let mut queue = receiver.queue.lock();
-        if !queue.is_stopped {
-            queue.queue.push_back(object);
-        }
+        receiver.queue.add_object_if_not_stopped(object.clone());
     }
 
     pub fn create_receiver(&self) -> Receiver<T> {
-        let queue = arc_mutex_new(ReceiverQueue::<T>::new());
+        let queue = ReceiverQueue::<T>::new();
         let queue_id = self
             .receiver_queues
             .receiver_queues
@@ -117,28 +131,48 @@ where
             receiver_queues: self.receiver_queues.clone(),
             queue_id,
             queue,
+            usage_counter_watcher: self.usage_counter.watcher(),
         }
     }
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct SenderDropped;
 
 impl<T> Receiver<T>
 where
     T: Clone,
 {
     pub fn stop(&mut self) {
-        self.queue.lock().is_stopped = true;
+        *self.queue.is_stopped.lock() = true;
     }
 
     pub fn resume(&mut self) {
-        self.queue.lock().is_stopped = false;
+        *self.queue.is_stopped.lock() = false;
     }
 
-    pub fn pop(&self) -> Option<T> {
-        self.queue.lock().queue.pop_front()
+    pub fn try_pop(&self) -> Result<Option<T>, SenderDropped> {
+        if let Some(object) = self.queue.queue.lock().pop_front() {
+            Ok(Some(object))
+        } else if self.usage_counter_watcher.is_observed_dropped() {
+            Err(SenderDropped)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn pop(&self) -> Result<T, SenderDropped> {
+        loop {
+            if let Some(object) = self.try_pop()? {
+                break Ok(object);
+            } else {
+                self.queue.notify.notified().await;
+            }
+        }
     }
 
     pub fn create_receiver(&self) -> Receiver<T> {
-        let queue = arc_mutex_new(ReceiverQueue::<T>::new());
+        let queue = ReceiverQueue::<T>::new();
         let queue_id = self
             .receiver_queues
             .receiver_queues
@@ -148,6 +182,7 @@ where
             receiver_queues: self.receiver_queues.clone(),
             queue_id,
             queue,
+            usage_counter_watcher: self.usage_counter_watcher.clone(),
         }
     }
 }
@@ -177,8 +212,8 @@ where
 mod tests {
     use super::*;
 
-    #[test]
-    fn send() {
+    #[tokio::test]
+    async fn send() {
         let sender = Sender::<String>::new();
 
         let receiver0 = sender.create_receiver();
@@ -186,22 +221,26 @@ mod tests {
 
         sender.send("0".to_string());
         sender.send("1".to_string());
-        let sender_clone = sender.clone();
-        sender_clone.send("2".to_string());
-        sender_clone.send("3".to_string());
-        sender_clone.send("4".to_string());
+        {
+            let sender = sender.clone();
+            sender.send("2".to_string());
+            sender.send("3".to_string());
+            sender.send("4".to_string());
+        }
 
-        assert_eq!(receiver0.pop(), Some("0".to_string()));
-        assert_eq!(receiver0.pop(), Some("1".to_string()));
-        assert_eq!(receiver0.pop(), Some("2".to_string()));
-        assert_eq!(receiver0.pop(), Some("3".to_string()));
-        assert_eq!(receiver0.pop(), Some("4".to_string()));
+        assert_eq!(receiver0.try_pop().unwrap(), Some("0".to_string()));
+        assert_eq!(receiver0.try_pop().unwrap(), Some("1".to_string()));
+        assert_eq!(receiver0.try_pop().unwrap(), Some("2".to_string()));
+        assert_eq!(receiver0.try_pop().unwrap(), Some("3".to_string()));
+        assert_eq!(receiver0.try_pop().unwrap(), Some("4".to_string()));
+        assert_eq!(receiver0.try_pop().unwrap(), None);
 
-        assert_eq!(receiver1.pop(), Some("0".to_string()));
-        assert_eq!(receiver1.pop(), Some("1".to_string()));
-        assert_eq!(receiver1.pop(), Some("2".to_string()));
-        assert_eq!(receiver1.pop(), Some("3".to_string()));
-        assert_eq!(receiver1.pop(), Some("4".to_string()));
+        assert_eq!(receiver1.pop().await.unwrap(), "0".to_string());
+        assert_eq!(receiver1.pop().await.unwrap(), "1".to_string());
+        assert_eq!(receiver1.pop().await.unwrap(), "2".to_string());
+        assert_eq!(receiver1.pop().await.unwrap(), "3".to_string());
+        assert_eq!(receiver1.pop().await.unwrap(), "4".to_string());
+        assert_eq!(receiver1.try_pop().unwrap(), None);
     }
 
     #[test]
@@ -217,13 +256,13 @@ mod tests {
         sender.send_directly("3".to_string(), &receiver0);
         sender.send_directly("4".to_string(), &receiver0);
 
-        assert_eq!(receiver0.pop(), Some("0".to_string()));
-        assert_eq!(receiver0.pop(), Some("1".to_string()));
-        assert_eq!(receiver0.pop(), Some("2".to_string()));
-        assert_eq!(receiver0.pop(), Some("3".to_string()));
-        assert_eq!(receiver0.pop(), Some("4".to_string()));
+        assert_eq!(receiver0.try_pop().unwrap(), Some("0".to_string()));
+        assert_eq!(receiver0.try_pop().unwrap(), Some("1".to_string()));
+        assert_eq!(receiver0.try_pop().unwrap(), Some("2".to_string()));
+        assert_eq!(receiver0.try_pop().unwrap(), Some("3".to_string()));
+        assert_eq!(receiver0.try_pop().unwrap(), Some("4".to_string()));
 
-        assert_eq!(receiver1.pop(), None);
+        assert_eq!(receiver1.try_pop().unwrap(), None);
     }
 
     #[test]
@@ -244,9 +283,9 @@ mod tests {
 
         sender.send("4".to_string());
 
-        assert_eq!(receiver.pop(), Some("0".to_string()));
-        assert_eq!(receiver.pop(), Some("1".to_string()));
-        assert_eq!(receiver.pop(), Some("4".to_string()));
+        assert_eq!(receiver.try_pop().unwrap(), Some("0".to_string()));
+        assert_eq!(receiver.try_pop().unwrap(), Some("1".to_string()));
+        assert_eq!(receiver.try_pop().unwrap(), Some("4".to_string()));
     }
 
     #[test]
@@ -263,5 +302,26 @@ mod tests {
         sender.send("0".to_string());
 
         assert_eq!(sender.receiver_queues.receiver_queues.lock().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn drop_sender() {
+        let (receiver0, receiver1) = {
+            let sender = Sender::<usize>::new();
+            let ret = (sender.create_receiver(), sender.create_receiver());
+
+            sender.send(7);
+
+            ret
+        };
+
+        let receiver2 = receiver0.create_receiver();
+
+        assert_eq!(receiver0.try_pop().unwrap(), Some(7));
+        assert_eq!(receiver1.try_pop().unwrap(), Some(7));
+
+        assert_eq!(receiver0.pop().await, Err(SenderDropped));
+        assert_eq!(receiver1.try_pop(), Err(SenderDropped));
+        assert_eq!(receiver2.try_pop(), Err(SenderDropped));
     }
 }
