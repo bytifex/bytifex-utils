@@ -5,14 +5,14 @@
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{self, AtomicUsize},
         Arc,
+        atomic::{self, AtomicUsize},
     },
 };
 
 use tokio::sync::watch;
 
-use super::types::{arc_mutex_new, ArcMutex};
+use super::types::{ArcMutex, arc_mutex_new};
 
 #[derive(Debug)]
 pub enum SendError {
@@ -186,7 +186,7 @@ mod tests {
 
     use crate::sync::types::ArcMutex;
 
-    use super::{channel, Receiver};
+    use super::{Receiver, channel};
 
     #[derive(Debug, Clone, Copy, Eq, PartialEq)]
     struct Msg(usize);
@@ -219,7 +219,7 @@ mod tests {
 
         let received_values = received_values.lock();
         assert_eq!(received_values.len(), 1);
-        assert_eq!(*received_values.get(0).unwrap(), Msg(7));
+        assert_eq!(*received_values.first().unwrap(), Msg(7));
     }
 
     #[tokio::test(flavor = "current_thread")]

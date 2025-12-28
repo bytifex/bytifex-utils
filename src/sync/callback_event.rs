@@ -1,6 +1,6 @@
 use crate::containers::object_pool::{ObjectPool, ObjectPoolIndex};
 
-use super::types::{arc_mutex_new, ArcMutex};
+use super::types::{ArcMutex, arc_mutex_new};
 
 type BoxedCallback<T> = Box<dyn FnMut(&T) + Send>;
 
@@ -66,8 +66,8 @@ impl<T> Drop for Subscription<T> {
 mod tests {
     use super::*;
 
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn subscribe_and_trigger() {

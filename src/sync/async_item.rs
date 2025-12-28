@@ -14,7 +14,7 @@ use std::{ops::Deref, sync::Arc};
 
 use tokio::sync::Notify;
 
-use super::types::{arc_rw_lock_new, ArcRwLock, RwLockReadGuard};
+use super::types::{ArcRwLock, RwLockReadGuard, arc_rw_lock_new};
 
 pub struct AsyncItem<T: Send> {
     value: ArcRwLock<Option<T>>,
@@ -75,7 +75,7 @@ impl<T: Send> AsyncItem<T> {
         drop(value_guard);
     }
 
-    pub async fn read(&self) -> AsyncItemReadGuard<T> {
+    pub async fn read(&self) -> AsyncItemReadGuard<'_, T> {
         loop {
             if let Some(guard) = self.try_read() {
                 break guard;
@@ -85,7 +85,7 @@ impl<T: Send> AsyncItem<T> {
         }
     }
 
-    pub fn try_read(&self) -> Option<AsyncItemReadGuard<T>> {
+    pub fn try_read(&self) -> Option<AsyncItemReadGuard<'_, T>> {
         let value_guard = self.value.read();
         if value_guard.is_some() {
             Some(AsyncItemReadGuard { inner: value_guard })
@@ -139,7 +139,7 @@ mod test {
 
         tokio::select! {
             _ = sleep(Duration::from_secs(2)) => {
-                assert!(false);
+                panic!("timeout waiting for tasks to complete");
             }
             _ = join_task => {
             }

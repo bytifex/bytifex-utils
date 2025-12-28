@@ -7,7 +7,7 @@ use tokio::sync::Notify;
 use crate::containers::object_pool::{ObjectPool, ObjectPoolIndex};
 
 use super::{
-    types::{arc_mutex_new, ArcMutex},
+    types::{ArcMutex, arc_mutex_new},
     usage_counter::{UsageCounter, UsageCounterWatcher},
 };
 

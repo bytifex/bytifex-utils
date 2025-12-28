@@ -5,7 +5,7 @@ use std::{
 
 use crate::containers::object_pool::{ObjectPool, ObjectPoolIndex};
 
-use super::types::{arc_mutex_new, ArcMutex};
+use super::types::{ArcMutex, arc_mutex_new};
 
 type ObserverFunction<T> = Box<dyn Fn(&T)>;
 
@@ -43,7 +43,7 @@ impl<T> Observable<T> {
         &self.value
     }
 
-    pub fn borrow_mut(&mut self) -> ObservableBorrower<T> {
+    pub fn borrow_mut(&mut self) -> ObservableBorrower<'_, T> {
         ObservableBorrower { observable: self }
     }
 

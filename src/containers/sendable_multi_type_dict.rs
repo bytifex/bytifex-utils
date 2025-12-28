@@ -1,6 +1,6 @@
 use std::{
     any::{Any, TypeId},
-    collections::{btree_map::Iter, BTreeMap},
+    collections::{BTreeMap, btree_map::Iter},
     ops::Deref,
     sync::Arc,
 };
@@ -9,7 +9,7 @@ use parking_lot::{Condvar, Mutex};
 
 use crate::{
     cast::DowncastArc,
-    sync::types::{arc_mutex_new, ArcMutex},
+    sync::types::{ArcMutex, arc_mutex_new},
 };
 
 type ItemTypeLock = Arc<(Mutex<bool>, Condvar)>;
@@ -174,7 +174,7 @@ impl SendableMultiTypeDict {
         self.storage.remove(&type_id)
     }
 
-    pub fn iter(&self) -> SendableMultiTypeDictIterator {
+    pub fn iter(&self) -> SendableMultiTypeDictIterator<'_> {
         SendableMultiTypeDictIterator {
             inner_iterator: self.storage.iter(),
         }
@@ -281,12 +281,13 @@ mod tests {
     fn store_and_remove() {
         let mut dict = SendableMultiTypeDict::new();
 
-        assert!(dict
-            .insert(A {
+        assert!(
+            dict.insert(A {
                 value: "A0".to_string(),
             })
             .old_item
-            .is_none());
+            .is_none()
+        );
 
         assert_eq!(
             *dict
@@ -301,12 +302,13 @@ mod tests {
             })
         );
 
-        assert!(dict
-            .insert(B {
+        assert!(
+            dict.insert(B {
                 value: "B".to_string(),
             })
             .old_item
-            .is_none());
+            .is_none()
+        );
 
         assert_eq!(
             *dict.get_item_ref::<A>().unwrap().as_arc_ref(),
@@ -325,7 +327,7 @@ mod tests {
         let systems: Vec<SendableMultiTypeDictItem<dyn Any + Send + Sync + 'static>> =
             dict.iter().collect();
         assert_eq!(systems.len(), 2);
-        if let Some(_) = systems[0].downcast::<A>() {
+        if systems[0].downcast::<A>().is_some() {
             assert!(systems[0].downcast::<A>().is_some());
             assert!(systems[1].downcast::<B>().is_some());
         } else {

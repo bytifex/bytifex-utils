@@ -53,7 +53,7 @@ impl AppLoopStateWatcher {
 mod tests {
     use std::time::Duration;
 
-    use tokio::time::{sleep_until, Instant};
+    use tokio::time::{Instant, sleep_until};
 
     use super::AppLoopState;
 
@@ -68,15 +68,9 @@ mod tests {
 
         let timeout = Duration::from_secs(1);
         let timestamp = Instant::now() + timeout;
-        loop {
-            tokio::select! {
-                _ = sleep_until(timestamp) => {
-                    break;
-                }
-                _ = state_watcher.wait_for_quit() => {
-                    break;
-                }
-            }
+        tokio::select! {
+            _ = sleep_until(timestamp) => {}
+            _ = state_watcher.wait_for_quit() => {}
         }
     }
 }
