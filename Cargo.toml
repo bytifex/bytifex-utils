@@ -7,7 +7,8 @@ edition = "2024"
 
 [dependencies]
 parking_lot = "0.12.5"
-tokio = { version = "1.33", features = ["sync", "time", "macros", "rt", "rt-multi-thread"] }
+tokio = { version = "1.33", features = ["sync"] }
 
 [dev-dependencies]
 closure = "0.3.0"
+tokio = { version = "1.33", features = ["sync", "time", "macros", "rt", "rt-multi-thread"] }
