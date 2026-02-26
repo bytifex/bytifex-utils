@@ -8,6 +8,7 @@ edition = "2024"
 [dependencies]
 parking_lot = "0.12.5"
 tokio = { version = "1.33", features = ["sync"] }
+or-die = "1.1.0"
 
 [dev-dependencies]
 closure = "0.3.0"

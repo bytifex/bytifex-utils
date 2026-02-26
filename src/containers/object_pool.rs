@@ -1,6 +1,8 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
+use or_die::OrDie;
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ObjectPoolIndex {
     index: usize,
@@ -85,6 +87,49 @@ impl<T> ObjectPool<T> {
                 ObjectPoolIndex { index, version }
             }
         }
+    }
+
+    pub fn create_object_with_fn<ErrorType>(
+        &mut self,
+        f: impl FnOnce(ObjectPoolIndex) -> Result<T, ErrorType>,
+    ) -> Result<(ObjectPoolIndex, &T), ErrorType> {
+        // pop should be issued after the call to f because it may panic!
+        let (index, pool_index) = match self.free_slots.peek() {
+            Some(Reverse(index)) => {
+                let index = *index;
+                let obj = &mut self.objects[index];
+
+                let pool_index = ObjectPoolIndex {
+                    index,
+                    version: obj.version + 1,
+                };
+
+                // call to f may panic! therefore using pop is
+                obj.object = Some(f(pool_index)?);
+                obj.version += 1;
+                self.free_slots.pop();
+                self.number_of_items += 1;
+
+                (index, pool_index)
+            }
+            None => {
+                let index = self.objects.len();
+                let version = 1;
+
+                let pool_index = ObjectPoolIndex { index, version };
+
+                self.objects.push(ObjectWrapper {
+                    version,
+                    object: Some(f(pool_index)?),
+                });
+
+                self.number_of_items += 1;
+
+                (index, pool_index)
+            }
+        };
+
+        Ok((pool_index, self.objects[index].object.as_ref().or_die()))
     }
 
     pub fn release_object(&mut self, index: ObjectPoolIndex) -> Option<T> {
@@ -211,6 +256,8 @@ impl<'a, T> Iterator for ObjectPoolIterMut<'a, T> {
 
 #[cfg(test)]
 mod tests {
+    use crate::infallible::UnwrapInfallible;
+
     use super::*;
 
     #[test]
@@ -220,8 +267,14 @@ mod tests {
         let index0 = pool.create_object("item0".to_string());
         let index1 = pool.create_object("item1".to_string());
         let index2 = pool.create_object("item2".to_string());
-        let index3 = pool.create_object("item3".to_string());
-        let index4 = pool.create_object("item4".to_string());
+        let index3 = pool
+            .create_object_with_fn(|_index| Ok("item3".to_string()))
+            .infallible()
+            .0;
+        let index4 = pool
+            .create_object_with_fn(|_index| Ok("item4".to_string()))
+            .infallible()
+            .0;
 
         assert_eq!(
             index0,
@@ -287,8 +340,14 @@ mod tests {
         let _index0 = pool.create_object("item0".to_string());
         let index1 = pool.create_object("item1".to_string());
         let index2 = pool.create_object("item2".to_string());
-        let _index3 = pool.create_object("item3".to_string());
-        let index4 = pool.create_object("item4".to_string());
+        let _index3 = pool
+            .create_object_with_fn(|_index| Ok("item3".to_string()))
+            .infallible()
+            .0;
+        let index4 = pool
+            .create_object_with_fn(|_index| Ok("item4".to_string()))
+            .infallible()
+            .0;
 
         assert_eq!(pool.len(), 5);
 
@@ -314,8 +373,14 @@ mod tests {
         let _index0 = pool.create_object("item0".to_string());
         let _index1 = pool.create_object("item1".to_string());
         let index2 = pool.create_object("item2".to_string());
-        let _index3 = pool.create_object("item3".to_string());
-        let _index4 = pool.create_object("item4".to_string());
+        let _index3 = pool
+            .create_object_with_fn(|_index| Ok("item3".to_string()))
+            .infallible()
+            .0;
+        let _index4 = pool
+            .create_object_with_fn(|_index| Ok("item4".to_string()))
+            .infallible()
+            .0;
 
         assert_eq!(pool.release_object(index2), Some("item2".to_string()));
         assert!(pool.release_object(index2).is_none());
@@ -348,8 +413,14 @@ mod tests {
         let _index0 = pool.create_object("item0".to_string());
         let index1 = pool.create_object("item1".to_string());
         let _index2 = pool.create_object("item2".to_string());
-        let index3 = pool.create_object("item3".to_string());
-        let index4 = pool.create_object("item4".to_string());
+        let index3 = pool
+            .create_object_with_fn(|_index| Ok("item3".to_string()))
+            .infallible()
+            .0;
+        let index4 = pool
+            .create_object_with_fn(|_index| Ok("item4".to_string()))
+            .infallible()
+            .0;
 
         {
             let mut counter = 0;
@@ -394,8 +465,14 @@ mod tests {
         let index0 = pool.create_object("item0".to_string());
         let index1 = pool.create_object("item1".to_string());
         let index2 = pool.create_object("item2".to_string());
-        let index3 = pool.create_object("item3".to_string());
-        let index4 = pool.create_object("item4".to_string());
+        let index3 = pool
+            .create_object_with_fn(|_index| Ok("item3".to_string()))
+            .infallible()
+            .0;
+        let index4 = pool
+            .create_object_with_fn(|_index| Ok("item4".to_string()))
+            .infallible()
+            .0;
 
         {
             let mut counter = 0;
