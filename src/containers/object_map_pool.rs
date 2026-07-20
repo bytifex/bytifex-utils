@@ -16,6 +16,16 @@ impl ObjectMapPoolIndex {
 
         id
     }
+
+    pub fn next_index<KeyType, ValueType>(
+        &self,
+        object_map_pool: &ObjectMapPool<KeyType, ValueType>,
+    ) -> Option<Self>
+    where
+        KeyType: Clone + Ord,
+    {
+        self.0.next_index(&object_map_pool.object_pool).map(Self)
+    }
 }
 
 pub struct ObjectMapPool<KeyType, ValueType>
@@ -118,13 +128,17 @@ where
         self.object_pool.is_empty()
     }
 
-    pub fn first_index(
+    pub fn find_first_index(
         &self,
         pred: impl Fn(&KeyType, &ValueType) -> bool,
     ) -> Option<ObjectMapPoolIndex> {
         self.object_pool
-            .first_index(|(key, value)| pred(key, value))
+            .find_first_index(|(key, value)| pred(key, value))
             .map(ObjectMapPoolIndex)
+    }
+
+    pub fn first_index(&self) -> Option<ObjectMapPoolIndex> {
+        self.object_pool.first_index().map(ObjectMapPoolIndex)
     }
 }
 
@@ -418,17 +432,77 @@ mod tests {
         let _index5 = pool.create_object(5, "item2".to_string());
 
         assert_eq!(
-            pool.first_index(|_key, value| value == "item0"),
+            pool.find_first_index(|_key, value| value == "item0"),
             Some(index0)
         );
         assert_eq!(
-            pool.first_index(|_key, value| value == "item1"),
+            pool.find_first_index(|_key, value| value == "item1"),
             Some(index1)
         );
         assert_eq!(
-            pool.first_index(|_key, value| value == "item2"),
+            pool.find_first_index(|_key, value| value == "item2"),
             Some(index3)
         );
-        assert_eq!(pool.first_index(|_key, value| value == "item3"), None);
+        assert_eq!(pool.find_first_index(|_key, value| value == "item3"), None);
+    }
+
+    #[test]
+    fn next_index_on_empty_pool() {
+        let pool = ObjectMapPool::<isize, String>::new();
+
+        assert_eq!(pool.first_index(), None);
+    }
+
+    #[test]
+    fn next_index_finds_immediate_next() {
+        let mut pool = ObjectMapPool::<isize, String>::new();
+
+        let _index0 = pool.create_object(0, "item0".to_string());
+        let index1 = pool.create_object(1, "item1".to_string());
+        let first = pool.first_index().unwrap();
+
+        assert_eq!(first.next_index(&pool), Some(index1));
+        assert_eq!(index1.next_index(&pool), None);
+    }
+
+    #[test]
+    fn next_index_skips_released_slots() {
+        let mut pool = ObjectMapPool::<isize, String>::new();
+
+        let _index0 = pool.create_object(0, "item0".to_string());
+        let index1 = pool.create_object(1, "item1".to_string());
+        let index2 = pool.create_object(2, "item2".to_string());
+        let index3 = pool.create_object(3, "item3".to_string());
+        let first = pool.first_index().unwrap();
+
+        assert_eq!(
+            pool.release_object_by_index(index1),
+            Some((1, "item1".to_string()))
+        );
+        assert_eq!(
+            pool.release_object_by_index(index2),
+            Some((2, "item2".to_string()))
+        );
+
+        assert_eq!(first.next_index(&pool), Some(index3));
+        assert_eq!(index3.next_index(&pool), None);
+    }
+
+    #[test]
+    fn next_index_from_stale_handle_uses_position_not_version() {
+        let mut pool = ObjectMapPool::<isize, String>::new();
+
+        let index0 = pool.create_object(0, "item0".to_string());
+        let index1 = pool.create_object(1, "item1".to_string());
+        let index2 = pool.create_object(2, "item2".to_string());
+        let first = pool.first_index().unwrap();
+
+        assert_eq!(
+            pool.release_object_by_index(index0),
+            Some((0, "item0".to_string()))
+        );
+
+        assert_eq!(first.next_index(&pool), Some(index1));
+        assert_eq!(index1.next_index(&pool), Some(index2));
     }
 }

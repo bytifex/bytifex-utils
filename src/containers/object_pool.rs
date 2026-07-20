@@ -23,6 +23,23 @@ impl ObjectPoolIndex {
 
         id
     }
+
+    pub fn next_index<T>(&self, object_pool: &ObjectPool<T>) -> Option<Self> {
+        let mut next_index = self.index + 1;
+        while next_index < object_pool.objects.len() {
+            if let Some(object_wrapper) = object_pool.objects.get(next_index)
+                && object_wrapper.object.is_some()
+            {
+                return Some(ObjectPoolIndex {
+                    index: next_index,
+                    version: object_wrapper.version,
+                });
+            }
+            next_index += 1;
+        }
+
+        None
+    }
 }
 
 struct ObjectWrapper<T> {
@@ -195,7 +212,7 @@ impl<T> ObjectPool<T> {
         self.number_of_items == 0
     }
 
-    pub fn first_index(&self, pred: impl Fn(&T) -> bool) -> Option<ObjectPoolIndex> {
+    pub fn find_first_index(&self, pred: impl Fn(&T) -> bool) -> Option<ObjectPoolIndex> {
         self.objects
             .iter()
             .position(|object_wrapper| {
@@ -205,6 +222,16 @@ impl<T> ObjectPool<T> {
                     false
                 }
             })
+            .map(|index| ObjectPoolIndex {
+                index,
+                version: self.objects[index].version,
+            })
+    }
+
+    pub fn first_index(&self) -> Option<ObjectPoolIndex> {
+        self.objects
+            .iter()
+            .position(|object_wrapper| object_wrapper.object.is_some())
             .map(|index| ObjectPoolIndex {
                 index,
                 version: self.objects[index].version,
@@ -526,9 +553,63 @@ mod tests {
         let _index4 = pool.create_object("item2".to_string());
         let _index5 = pool.create_object("item2".to_string());
 
-        assert_eq!(pool.first_index(|item| item == "item0"), Some(index0));
-        assert_eq!(pool.first_index(|item| item == "item1"), Some(index1));
-        assert_eq!(pool.first_index(|item| item == "item2"), Some(index3));
-        assert_eq!(pool.first_index(|item| item == "item3"), None);
+        assert_eq!(pool.find_first_index(|item| item == "item0"), Some(index0));
+        assert_eq!(pool.find_first_index(|item| item == "item1"), Some(index1));
+        assert_eq!(pool.find_first_index(|item| item == "item2"), Some(index3));
+        assert_eq!(pool.find_first_index(|item| item == "item3"), None);
+    }
+
+    #[test]
+    fn next_index_on_empty_pool() {
+        let pool = ObjectPool::<String>::new();
+
+        assert_eq!(pool.first_index(), None);
+    }
+
+    #[test]
+    fn next_index_finds_immediate_next() {
+        let mut pool = ObjectPool::<String>::new();
+
+        let index0 = pool.create_object("item0".to_string());
+        let index1 = pool.create_object("item1".to_string());
+
+        let first = pool.first_index().unwrap();
+
+        assert_eq!(first, index0);
+        assert_eq!(first.next_index(&pool), Some(index1));
+        assert_eq!(index1.next_index(&pool), None);
+    }
+
+    #[test]
+    fn next_index_skips_released_slots() {
+        let mut pool = ObjectPool::<String>::new();
+
+        let _index0 = pool.create_object("item0".to_string());
+        let index1 = pool.create_object("item1".to_string());
+        let index2 = pool.create_object("item2".to_string());
+        let index3 = pool.create_object("item3".to_string());
+        let first = pool.first_index().unwrap();
+
+        assert_eq!(pool.release_object(index1), Some("item1".to_string()));
+        assert_eq!(pool.release_object(index2), Some("item2".to_string()));
+
+        assert_eq!(first.next_index(&pool), Some(index3));
+        assert_eq!(index3.next_index(&pool), None);
+    }
+
+    #[test]
+    fn next_index_from_stale_handle_uses_position_not_version() {
+        let mut pool = ObjectPool::<String>::new();
+
+        let index0 = pool.create_object("item0".to_string());
+        let index1 = pool.create_object("item1".to_string());
+        let index2 = pool.create_object("item2".to_string());
+        let first = pool.first_index().unwrap();
+
+        assert_eq!(pool.release_object(index0), Some("item0".to_string()));
+
+        // `next` advances by index position and does not validate the current handle version.
+        assert_eq!(first.next_index(&pool), Some(index1));
+        assert_eq!(index1.next_index(&pool), Some(index2));
     }
 }
