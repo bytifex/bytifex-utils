@@ -1,8 +1,7 @@
 #![allow(clippy::type_complexity)]
 
+use crate::sync::notify::Notify;
 use std::{collections::VecDeque, sync::Arc};
-
-use tokio::sync::Notify;
 
 use crate::containers::object_pool::{ObjectPool, ObjectPoolIndex};
 
