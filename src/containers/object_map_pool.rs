@@ -1,13 +1,25 @@
 use std::collections::BTreeMap;
 
-use super::object_pool::{ObjectPool, ObjectPoolIndex, ObjectPoolIter, ObjectPoolIterMut};
+use super::object_pool::{DefaultObjectPoolIndex, ObjectPool, ObjectPoolIter, ObjectPoolIterMut};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
-pub struct ObjectMapPoolIndex(ObjectPoolIndex);
+pub struct ObjectMapPoolIndex(DefaultObjectPoolIndex);
+
+impl From<ObjectMapPoolIndex> for DefaultObjectPoolIndex {
+    fn from(index: ObjectMapPoolIndex) -> DefaultObjectPoolIndex {
+        index.0
+    }
+}
+
+impl From<DefaultObjectPoolIndex> for ObjectMapPoolIndex {
+    fn from(index: DefaultObjectPoolIndex) -> Self {
+        Self(index)
+    }
+}
 
 impl ObjectMapPoolIndex {
     pub fn invalid() -> Self {
-        Self(ObjectPoolIndex::invalid())
+        DefaultObjectPoolIndex::invalid().into()
     }
 
     pub fn invalidate(&mut self) -> Self {
@@ -32,7 +44,7 @@ pub struct ObjectMapPool<KeyType, ValueType>
 where
     KeyType: Clone + Ord,
 {
-    object_pool: ObjectPool<(KeyType, ValueType)>,
+    object_pool: ObjectPool<(KeyType, ValueType), ObjectMapPoolIndex>,
     map_of_indices: BTreeMap<KeyType, ObjectMapPoolIndex>,
 }
 
@@ -56,15 +68,15 @@ where
 
     pub fn create_object(&mut self, key: KeyType, value: ValueType) -> ObjectMapPoolIndex {
         let index = self.object_pool.create_object((key.clone(), value));
-        self.map_of_indices.insert(key, ObjectMapPoolIndex(index));
-        ObjectMapPoolIndex(index)
+        self.map_of_indices.insert(key, index);
+        index
     }
 
     pub fn release_object_by_index(
         &mut self,
         index: ObjectMapPoolIndex,
     ) -> Option<(KeyType, ValueType)> {
-        self.object_pool.release_object(index.0).map(|object| {
+        self.object_pool.release_object(index).map(|object| {
             self.map_of_indices.remove(&object.0);
             (object.0, object.1)
         })
@@ -79,7 +91,7 @@ where
 
     pub fn get_ref_by_index(&self, index: ObjectMapPoolIndex) -> Option<(&KeyType, &ValueType)> {
         self.object_pool
-            .get_ref(index.0)
+            .get_ref(index)
             .map(|(key, value)| (key, value))
     }
 
@@ -97,7 +109,7 @@ where
         index: ObjectMapPoolIndex,
     ) -> Option<(&KeyType, &mut ValueType)> {
         self.object_pool
-            .get_mut(index.0)
+            .get_mut(index)
             .map(|(key, value)| (&*key, value))
     }
 
@@ -134,11 +146,10 @@ where
     ) -> Option<ObjectMapPoolIndex> {
         self.object_pool
             .find_first_index(|(key, value)| pred(key, value))
-            .map(ObjectMapPoolIndex)
     }
 
     pub fn first_index(&self) -> Option<ObjectMapPoolIndex> {
-        self.object_pool.first_index().map(ObjectMapPoolIndex)
+        self.object_pool.first_index()
     }
 }
 

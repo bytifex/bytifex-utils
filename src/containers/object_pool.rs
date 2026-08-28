@@ -3,13 +3,44 @@ use std::collections::BinaryHeap;
 
 use or_die::OrDie;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
-pub struct ObjectPoolIndex {
+pub trait ObjectPoolIndex:
+    Sized + Into<DefaultObjectPoolIndex> + From<DefaultObjectPoolIndex>
+{
+    fn invalid() -> Self;
+    fn invalidate(&mut self) -> Self;
+    fn next_index<T>(&self, object_pool: &ObjectPool<T, Self>) -> Option<Self>;
+}
+
+impl<IndexType> ObjectPoolIndex for IndexType
+where
+    IndexType: From<DefaultObjectPoolIndex> + Into<DefaultObjectPoolIndex> + Clone,
+{
+    fn invalid() -> Self {
+        DefaultObjectPoolIndex::invalid().into()
+    }
+
+    fn invalidate(&mut self) -> Self {
+        let mut id = Self::invalid();
+        std::mem::swap(&mut id, self);
+
+        id
+    }
+
+    fn next_index<T>(&self, object_pool: &ObjectPool<T, Self>) -> Option<Self> {
+        let default_index: DefaultObjectPoolIndex = self.clone().into();
+        default_index
+            .next_index(object_pool)
+            .map(|index| index.into())
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct DefaultObjectPoolIndex {
     index: usize,
     version: isize,
 }
 
-impl ObjectPoolIndex {
+impl DefaultObjectPoolIndex {
     pub fn invalid() -> Self {
         Self {
             index: 0,
@@ -24,13 +55,16 @@ impl ObjectPoolIndex {
         id
     }
 
-    pub fn next_index<T>(&self, object_pool: &ObjectPool<T>) -> Option<Self> {
+    pub fn next_index<T, IndexType: ObjectPoolIndex>(
+        &self,
+        object_pool: &ObjectPool<T, IndexType>,
+    ) -> Option<Self> {
         let mut next_index = self.index + 1;
         while next_index < object_pool.objects.len() {
             if let Some(object_wrapper) = object_pool.objects.get(next_index)
                 && object_wrapper.object.is_some()
             {
-                return Some(ObjectPoolIndex {
+                return Some(DefaultObjectPoolIndex {
                     index: next_index,
                     version: object_wrapper.version,
                 });
@@ -47,24 +81,26 @@ struct ObjectWrapper<T> {
     object: Option<T>,
 }
 
-pub struct ObjectPool<T> {
+pub struct ObjectPool<T, IndexType: ObjectPoolIndex> {
     objects: Vec<ObjectWrapper<T>>,
     free_slots: BinaryHeap<Reverse<usize>>,
     number_of_items: usize,
+    _marker: std::marker::PhantomData<IndexType>,
 }
 
-impl<T> Default for ObjectPool<T> {
+impl<T, IndexType: ObjectPoolIndex> Default for ObjectPool<T, IndexType> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> ObjectPool<T> {
+impl<T, IndexType: ObjectPoolIndex> ObjectPool<T, IndexType> {
     pub fn new() -> Self {
         ObjectPool {
             objects: Vec::new(),
             free_slots: BinaryHeap::new(),
             number_of_items: 0,
+            _marker: Default::default(),
         }
     }
 
@@ -73,10 +109,11 @@ impl<T> ObjectPool<T> {
             objects: Vec::with_capacity(capacity),
             free_slots: BinaryHeap::with_capacity(capacity),
             number_of_items: 0,
+            _marker: Default::default(),
         }
     }
 
-    pub fn create_object(&mut self, value: T) -> ObjectPoolIndex {
+    pub fn create_object(&mut self, value: T) -> IndexType {
         match self.free_slots.pop() {
             Some(Reverse(index)) => {
                 let obj = &mut self.objects[index];
@@ -85,10 +122,11 @@ impl<T> ObjectPool<T> {
 
                 self.number_of_items += 1;
 
-                ObjectPoolIndex {
+                DefaultObjectPoolIndex {
                     index,
                     version: obj.version,
                 }
+                .into()
             }
             None => {
                 let index = self.objects.len();
@@ -101,28 +139,29 @@ impl<T> ObjectPool<T> {
 
                 self.number_of_items += 1;
 
-                ObjectPoolIndex { index, version }
+                DefaultObjectPoolIndex { index, version }.into()
             }
         }
     }
 
     pub fn create_object_with_fn<ErrorType>(
         &mut self,
-        f: impl FnOnce(ObjectPoolIndex) -> Result<T, ErrorType>,
-    ) -> Result<(ObjectPoolIndex, &T), ErrorType> {
+        f: impl FnOnce(&IndexType) -> Result<T, ErrorType>,
+    ) -> Result<(IndexType, &T), ErrorType> {
         // pop should be issued after the call to f because it may panic!
         let (index, pool_index) = match self.free_slots.peek() {
             Some(Reverse(index)) => {
                 let index = *index;
                 let obj = &mut self.objects[index];
 
-                let pool_index = ObjectPoolIndex {
+                let pool_index: IndexType = DefaultObjectPoolIndex {
                     index,
                     version: obj.version + 1,
-                };
+                }
+                .into();
 
-                // call to f may panic! therefore using pop is
-                obj.object = Some(f(pool_index)?);
+                // call to f may panic! therefore using pop
+                obj.object = Some(f(&pool_index)?);
                 obj.version += 1;
                 self.free_slots.pop();
                 self.number_of_items += 1;
@@ -133,11 +172,11 @@ impl<T> ObjectPool<T> {
                 let index = self.objects.len();
                 let version = 1;
 
-                let pool_index = ObjectPoolIndex { index, version };
+                let pool_index: IndexType = DefaultObjectPoolIndex { index, version }.into();
 
                 self.objects.push(ObjectWrapper {
                     version,
-                    object: Some(f(pool_index)?),
+                    object: Some(f(&pool_index)?),
                 });
 
                 self.number_of_items += 1;
@@ -149,7 +188,8 @@ impl<T> ObjectPool<T> {
         Ok((pool_index, self.objects[index].object.as_ref().or_die()))
     }
 
-    pub fn release_object(&mut self, index: ObjectPoolIndex) -> Option<T> {
+    pub fn release_object(&mut self, index: IndexType) -> Option<T> {
+        let index: DefaultObjectPoolIndex = index.into();
         if index.index < self.objects.len() {
             let obj = &mut self.objects[index.index];
             if obj.version == index.version {
@@ -170,7 +210,8 @@ impl<T> ObjectPool<T> {
         }
     }
 
-    pub fn get_ref(&self, index: ObjectPoolIndex) -> Option<&T> {
+    pub fn get_ref(&self, index: IndexType) -> Option<&T> {
+        let index: DefaultObjectPoolIndex = index.into();
         if index.index < self.objects.len() {
             let obj = &self.objects[index.index];
             if obj.version == index.version {
@@ -181,7 +222,8 @@ impl<T> ObjectPool<T> {
         None
     }
 
-    pub fn get_mut(&mut self, index: ObjectPoolIndex) -> Option<&mut T> {
+    pub fn get_mut(&mut self, index: IndexType) -> Option<&mut T> {
+        let index: DefaultObjectPoolIndex = index.into();
         if index.index < self.objects.len() {
             let obj = &mut self.objects[index.index];
             if obj.version == index.version {
@@ -212,7 +254,7 @@ impl<T> ObjectPool<T> {
         self.number_of_items == 0
     }
 
-    pub fn find_first_index(&self, pred: impl Fn(&T) -> bool) -> Option<ObjectPoolIndex> {
+    pub fn find_first_index(&self, pred: impl Fn(&T) -> bool) -> Option<IndexType> {
         self.objects
             .iter()
             .position(|object_wrapper| {
@@ -222,19 +264,25 @@ impl<T> ObjectPool<T> {
                     false
                 }
             })
-            .map(|index| ObjectPoolIndex {
-                index,
-                version: self.objects[index].version,
+            .map(|index| {
+                DefaultObjectPoolIndex {
+                    index,
+                    version: self.objects[index].version,
+                }
+                .into()
             })
     }
 
-    pub fn first_index(&self) -> Option<ObjectPoolIndex> {
+    pub fn first_index(&self) -> Option<IndexType> {
         self.objects
             .iter()
             .position(|object_wrapper| object_wrapper.object.is_some())
-            .map(|index| ObjectPoolIndex {
-                index,
-                version: self.objects[index].version,
+            .map(|index| {
+                DefaultObjectPoolIndex {
+                    index,
+                    version: self.objects[index].version,
+                }
+                .into()
             })
     }
 }
@@ -289,7 +337,7 @@ mod tests {
 
     #[test]
     fn create_release_create() {
-        let mut pool = ObjectPool::<String>::new();
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
 
         let index0 = pool.create_object("item0".to_string());
         let index1 = pool.create_object("item1".to_string());
@@ -305,35 +353,35 @@ mod tests {
 
         assert_eq!(
             index0,
-            ObjectPoolIndex {
+            DefaultObjectPoolIndex {
                 index: 0,
                 version: 1
             }
         );
         assert_eq!(
             index1,
-            ObjectPoolIndex {
+            DefaultObjectPoolIndex {
                 index: 1,
                 version: 1
             }
         );
         assert_eq!(
             index2,
-            ObjectPoolIndex {
+            DefaultObjectPoolIndex {
                 index: 2,
                 version: 1
             }
         );
         assert_eq!(
             index3,
-            ObjectPoolIndex {
+            DefaultObjectPoolIndex {
                 index: 3,
                 version: 1
             }
         );
         assert_eq!(
             index4,
-            ObjectPoolIndex {
+            DefaultObjectPoolIndex {
                 index: 4,
                 version: 1
             }
@@ -352,7 +400,7 @@ mod tests {
         let index5 = pool.create_object("item5".to_string());
         assert_eq!(
             index5,
-            ObjectPoolIndex {
+            DefaultObjectPoolIndex {
                 index: 1,
                 version: 3
             }
@@ -362,7 +410,7 @@ mod tests {
 
     #[test]
     fn accessing_released_object() {
-        let mut pool = ObjectPool::<String>::new();
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
 
         let _index0 = pool.create_object("item0".to_string());
         let index1 = pool.create_object("item1".to_string());
@@ -395,7 +443,7 @@ mod tests {
 
     #[test]
     fn releasing_invalid_index() {
-        let mut pool = ObjectPool::<String>::new();
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
 
         let _index0 = pool.create_object("item0".to_string());
         let _index1 = pool.create_object("item1".to_string());
@@ -415,7 +463,7 @@ mod tests {
 
     #[test]
     fn iterate_ref_on_empty() {
-        let pool = ObjectPool::<String>::new();
+        let pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
         let mut counter = 0;
         for _ in pool.iter() {
             counter += 1;
@@ -425,7 +473,7 @@ mod tests {
 
     #[test]
     fn iterate_mut_on_empty() {
-        let mut pool = ObjectPool::<String>::new();
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
         let mut counter = 0;
         for _ in pool.iter_mut() {
             counter += 1;
@@ -435,7 +483,7 @@ mod tests {
 
     #[test]
     fn iterate_ref() {
-        let mut pool = ObjectPool::<String>::new();
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
 
         let _index0 = pool.create_object("item0".to_string());
         let index1 = pool.create_object("item1".to_string());
@@ -487,7 +535,7 @@ mod tests {
 
     #[test]
     fn iterate_mut() {
-        let mut pool = ObjectPool::<String>::new();
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
 
         let index0 = pool.create_object("item0".to_string());
         let index1 = pool.create_object("item1".to_string());
@@ -544,7 +592,7 @@ mod tests {
 
     #[test]
     fn first_index() {
-        let mut pool = ObjectPool::<String>::new();
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
 
         let index0 = pool.create_object("item0".to_string());
         let index1 = pool.create_object("item1".to_string());
@@ -561,14 +609,14 @@ mod tests {
 
     #[test]
     fn next_index_on_empty_pool() {
-        let pool = ObjectPool::<String>::new();
+        let pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
 
         assert_eq!(pool.first_index(), None);
     }
 
     #[test]
     fn next_index_finds_immediate_next() {
-        let mut pool = ObjectPool::<String>::new();
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
 
         let index0 = pool.create_object("item0".to_string());
         let index1 = pool.create_object("item1".to_string());
@@ -582,7 +630,7 @@ mod tests {
 
     #[test]
     fn next_index_skips_released_slots() {
-        let mut pool = ObjectPool::<String>::new();
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
 
         let _index0 = pool.create_object("item0".to_string());
         let index1 = pool.create_object("item1".to_string());
@@ -599,7 +647,7 @@ mod tests {
 
     #[test]
     fn next_index_from_stale_handle_uses_position_not_version() {
-        let mut pool = ObjectPool::<String>::new();
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
 
         let index0 = pool.create_object("item0".to_string());
         let index1 = pool.create_object("item1".to_string());

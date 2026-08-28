@@ -1,21 +1,36 @@
-use crate::containers::object_pool::{ObjectPool, ObjectPoolIndex};
+use crate::containers::object_pool::{DefaultObjectPoolIndex, ObjectPool, ObjectPoolIndex};
 
 use super::types::{ArcMutex, arc_mutex_new};
 
 type BoxedCallback<T> = Box<dyn FnMut(&T) + Send>;
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct CallbackIndex(DefaultObjectPoolIndex);
+
+impl From<CallbackIndex> for DefaultObjectPoolIndex {
+    fn from(index: CallbackIndex) -> DefaultObjectPoolIndex {
+        index.0
+    }
+}
+
+impl From<DefaultObjectPoolIndex> for CallbackIndex {
+    fn from(index: DefaultObjectPoolIndex) -> Self {
+        Self(index)
+    }
+}
+
 pub struct Subscription<T> {
-    callback_index: ObjectPoolIndex,
-    callbacks: ArcMutex<ObjectPool<BoxedCallback<T>>>,
+    callback_index: CallbackIndex,
+    callbacks: ArcMutex<ObjectPool<BoxedCallback<T>, CallbackIndex>>,
 }
 
 #[derive(Clone)]
 pub struct Sender<T> {
-    callbacks: ArcMutex<ObjectPool<BoxedCallback<T>>>,
+    callbacks: ArcMutex<ObjectPool<BoxedCallback<T>, CallbackIndex>>,
 }
 
 pub struct Subscriber<T> {
-    callbacks: ArcMutex<ObjectPool<BoxedCallback<T>>>,
+    callbacks: ArcMutex<ObjectPool<BoxedCallback<T>, CallbackIndex>>,
 }
 
 impl<T> Default for Sender<T> {
@@ -46,9 +61,9 @@ impl<T> Sender<T> {
 
 impl<T> Subscriber<T> {
     pub fn subscribe(&self, f: impl FnMut(&T) + Send + 'static) -> Subscription<T> {
-        let index = self.callbacks.lock().create_object(Box::new(f));
+        let callback_index = self.callbacks.lock().create_object(Box::new(f));
         Subscription {
-            callback_index: index,
+            callback_index,
             callbacks: self.callbacks.clone(),
         }
     }

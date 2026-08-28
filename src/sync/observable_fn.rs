@@ -3,16 +3,31 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use crate::containers::object_pool::{ObjectPool, ObjectPoolIndex};
+use crate::containers::object_pool::{DefaultObjectPoolIndex, ObjectPool};
 
 use super::types::{ArcMutex, arc_mutex_new};
 
 type ObserverFunction<T> = Box<dyn Fn(&T)>;
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct ObserverIndex(DefaultObjectPoolIndex);
+
+impl From<ObserverIndex> for DefaultObjectPoolIndex {
+    fn from(index: ObserverIndex) -> DefaultObjectPoolIndex {
+        index.0
+    }
+}
+
+impl From<DefaultObjectPoolIndex> for ObserverIndex {
+    fn from(index: DefaultObjectPoolIndex) -> Self {
+        Self(index)
+    }
+}
+
 pub struct Observable<T> {
     value: T,
-    observers: ObjectPool<ObserverFunction<T>>,
-    to_be_deleted_observers: ArcMutex<Vec<ObjectPoolIndex>>,
+    observers: ObjectPool<ObserverFunction<T>, ObserverIndex>,
+    to_be_deleted_observers: ArcMutex<Vec<ObserverIndex>>,
 }
 
 pub struct ObservableBorrower<'a, T> {
@@ -20,8 +35,8 @@ pub struct ObservableBorrower<'a, T> {
 }
 
 pub struct Observer<T> {
-    observer_index: ObjectPoolIndex,
-    to_be_deleted_observers: ArcMutex<Vec<ObjectPoolIndex>>,
+    observer_index: ObserverIndex,
+    to_be_deleted_observers: ArcMutex<Vec<ObserverIndex>>,
     _phantom: PhantomData<T>,
 }
 

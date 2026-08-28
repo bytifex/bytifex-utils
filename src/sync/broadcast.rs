@@ -3,7 +3,7 @@
 use crate::sync::notify::Notify;
 use std::{collections::VecDeque, sync::Arc};
 
-use crate::containers::object_pool::{ObjectPool, ObjectPoolIndex};
+use crate::containers::object_pool::{DefaultObjectPoolIndex, ObjectPool};
 
 use super::{
     types::{ArcMutex, arc_mutex_new},
@@ -17,13 +17,28 @@ struct ReceiverQueue<T> {
     notify: Arc<Notify>,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct ReceiverQueueIndex(DefaultObjectPoolIndex);
+
+impl From<ReceiverQueueIndex> for DefaultObjectPoolIndex {
+    fn from(index: ReceiverQueueIndex) -> DefaultObjectPoolIndex {
+        index.0
+    }
+}
+
+impl From<DefaultObjectPoolIndex> for ReceiverQueueIndex {
+    fn from(index: DefaultObjectPoolIndex) -> Self {
+        Self(index)
+    }
+}
+
 #[derive(Clone)]
 struct ReceiverQueueList<T>
 where
     T: Clone,
 {
-    receiver_queues: ArcMutex<ObjectPool<ReceiverQueue<T>>>,
-    to_be_removed: ArcMutex<Vec<ObjectPoolIndex>>,
+    receiver_queues: ArcMutex<ObjectPool<ReceiverQueue<T>, ReceiverQueueIndex>>,
+    to_be_removed: ArcMutex<Vec<ReceiverQueueIndex>>,
 }
 
 #[derive(Clone)]
@@ -40,7 +55,7 @@ where
     T: Clone,
 {
     receiver_queues: ReceiverQueueList<T>,
-    queue_id: ObjectPoolIndex,
+    queue_id: ReceiverQueueIndex,
     queue: ReceiverQueue<T>,
     usage_counter_watcher: UsageCounterWatcher,
 }
