@@ -3,7 +3,7 @@
 use crate::sync::notify::Notify;
 use std::{collections::VecDeque, sync::Arc};
 
-use crate::containers::object_pool::{DefaultObjectPoolIndex, ObjectPool};
+use crate::containers::object_pool::ObjectPool;
 
 use super::{
     types::{ArcMutex, arc_mutex_new},
@@ -17,20 +17,7 @@ struct ReceiverQueue<T> {
     notify: Arc<Notify>,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-struct ReceiverQueueIndex(DefaultObjectPoolIndex);
-
-impl From<ReceiverQueueIndex> for DefaultObjectPoolIndex {
-    fn from(index: ReceiverQueueIndex) -> DefaultObjectPoolIndex {
-        index.0
-    }
-}
-
-impl From<DefaultObjectPoolIndex> for ReceiverQueueIndex {
-    fn from(index: DefaultObjectPoolIndex) -> Self {
-        Self(index)
-    }
-}
+crate::object_pool_index!(struct ReceiverQueueIndex);
 
 #[derive(Clone)]
 struct ReceiverQueueList<T>

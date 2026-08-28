@@ -3,26 +3,13 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use crate::containers::object_pool::{DefaultObjectPoolIndex, ObjectPool};
+use crate::containers::object_pool::ObjectPool;
 
 use super::types::{ArcMutex, arc_mutex_new};
 
 type ObserverFunction<T> = Box<dyn Fn(&T)>;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-struct ObserverIndex(DefaultObjectPoolIndex);
-
-impl From<ObserverIndex> for DefaultObjectPoolIndex {
-    fn from(index: ObserverIndex) -> DefaultObjectPoolIndex {
-        index.0
-    }
-}
-
-impl From<DefaultObjectPoolIndex> for ObserverIndex {
-    fn from(index: DefaultObjectPoolIndex) -> Self {
-        Self(index)
-    }
-}
+crate::object_pool_index!(struct ObserverIndex);
 
 pub struct Observable<T> {
     value: T,

@@ -40,6 +40,35 @@ pub struct DefaultObjectPoolIndex {
     version: isize,
 }
 
+/// Declares a newtype wrapping [`DefaultObjectPoolIndex`] with the `From`/`Into` impls
+/// required by [`ObjectPoolIndex`], so it can be used as an [`ObjectPool`] index type.
+///
+/// Usable both inside and outside this crate, e.g.:
+/// ```
+/// bytifex_utils::object_pool_index!(struct MyIndex);
+/// bytifex_utils::object_pool_index!(pub struct MyPublicIndex);
+/// ```
+#[macro_export]
+macro_rules! object_pool_index {
+    ($(#[$meta:meta])* $vis:vis struct $name:ident) => {
+        $(#[$meta])*
+        #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+        $vis struct $name($crate::containers::object_pool::DefaultObjectPoolIndex);
+
+        impl ::std::convert::From<$name> for $crate::containers::object_pool::DefaultObjectPoolIndex {
+            fn from(index: $name) -> $crate::containers::object_pool::DefaultObjectPoolIndex {
+                index.0
+            }
+        }
+
+        impl ::std::convert::From<$crate::containers::object_pool::DefaultObjectPoolIndex> for $name {
+            fn from(index: $crate::containers::object_pool::DefaultObjectPoolIndex) -> Self {
+                Self(index)
+            }
+        }
+    };
+}
+
 impl DefaultObjectPoolIndex {
     pub fn invalid() -> Self {
         Self {

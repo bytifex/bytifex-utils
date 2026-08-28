@@ -1,23 +1,10 @@
-use crate::containers::object_pool::{DefaultObjectPoolIndex, ObjectPool, ObjectPoolIndex};
+use crate::containers::object_pool::{ObjectPool, ObjectPoolIndex};
 
 use super::types::{ArcMutex, arc_mutex_new};
 
 type BoxedCallback<T> = Box<dyn FnMut(&T) + Send>;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-struct CallbackIndex(DefaultObjectPoolIndex);
-
-impl From<CallbackIndex> for DefaultObjectPoolIndex {
-    fn from(index: CallbackIndex) -> DefaultObjectPoolIndex {
-        index.0
-    }
-}
-
-impl From<DefaultObjectPoolIndex> for CallbackIndex {
-    fn from(index: DefaultObjectPoolIndex) -> Self {
-        Self(index)
-    }
-}
+crate::object_pool_index!(struct CallbackIndex);
 
 pub struct Subscription<T> {
     callback_index: CallbackIndex,
