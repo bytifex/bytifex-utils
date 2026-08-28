@@ -275,6 +275,15 @@ impl<T, IndexType: ObjectPoolIndex> ObjectPool<T, IndexType> {
         }
     }
 
+    pub fn drain(&mut self) -> ObjectPoolDrain<T> {
+        self.free_slots.clear();
+        self.number_of_items = 0;
+
+        ObjectPoolDrain {
+            inner_iterator: std::mem::take(&mut self.objects).into_iter(),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.number_of_items
     }
@@ -351,6 +360,24 @@ impl<'a, T> Iterator for ObjectPoolIterMut<'a, T> {
                 return object;
             } else {
                 continue;
+            }
+        }
+
+        None
+    }
+}
+
+pub struct ObjectPoolDrain<T> {
+    inner_iterator: std::vec::IntoIter<ObjectWrapper<T>>,
+}
+
+impl<T> Iterator for ObjectPoolDrain<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for object_wrapper in self.inner_iterator.by_ref() {
+            if let Some(object) = object_wrapper.object {
+                return Some(object);
             }
         }
 
@@ -688,5 +715,67 @@ mod tests {
         // `next` advances by index position and does not validate the current handle version.
         assert_eq!(first.next_index(&pool), Some(index1));
         assert_eq!(index1.next_index(&pool), Some(index2));
+    }
+
+    #[test]
+    fn drain_on_empty() {
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
+
+        let items: Vec<_> = pool.drain().collect();
+
+        assert!(items.is_empty());
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn drain_returns_all_items_and_empties_pool() {
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
+
+        let _index0 = pool.create_object("item0".to_string());
+        let index1 = pool.create_object("item1".to_string());
+        let _index2 = pool.create_object("item2".to_string());
+
+        assert_eq!(pool.release_object(index1), Some("item1".to_string()));
+
+        let _index3 = pool.create_object("item3".to_string());
+
+        let items: Vec<_> = pool.drain().collect();
+
+        assert_eq!(
+            items,
+            vec![
+                "item0".to_string(),
+                "item3".to_string(),
+                "item2".to_string()
+            ]
+        );
+
+        assert!(pool.is_empty());
+        assert_eq!(pool.len(), 0);
+        assert_eq!(pool.iter().count(), 0);
+        assert_eq!(pool.first_index(), None);
+    }
+
+    #[test]
+    fn pool_is_reusable_after_drain() {
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
+
+        let _index0 = pool.create_object("item0".to_string());
+        let _index1 = pool.create_object("item1".to_string());
+
+        let drained: Vec<_> = pool.drain().collect();
+        assert_eq!(drained.len(), 2);
+
+        let index = pool.create_object("new item".to_string());
+
+        assert_eq!(pool.len(), 1);
+        assert_eq!(pool.get_ref(index).cloned(), Some("new item".to_string()));
+        assert_eq!(
+            index,
+            DefaultObjectPoolIndex {
+                index: 0,
+                version: 1
+            }
+        );
     }
 }
