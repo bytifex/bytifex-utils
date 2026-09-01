@@ -1,7 +1,8 @@
 use std::{rc::Rc, sync::Arc};
 
+pub use parking_lot::{Mutex, RwLock};
 use parking_lot::{
-    Mutex, MutexGuard as PLMutexGuard, RwLock, RwLockReadGuard as PLRwLockReadGuard,
+    MutexGuard as PLMutexGuard, RwLockReadGuard as PLRwLockReadGuard,
     RwLockWriteGuard as PLRwLockWriteGuard,
 };
 
