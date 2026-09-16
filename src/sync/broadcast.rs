@@ -27,7 +27,7 @@ impl<T> Clone for ReceiverQueue<T> {
 }
 
 struct ReceiverSubscription<T> {
-    deliver: Box<dyn Fn(&T)>,
+    deliver: Box<dyn Fn(&T) + Send + Sync>,
 }
 
 crate::object_pool_index!(struct ReceiverSubscriptionIndex);
@@ -80,7 +80,7 @@ where
     receiver_subscriptions: ReceiverSubscriptionList<T>,
     queue_id: ReceiverSubscriptionIndex,
     queue: ReceiverQueue<TargetType>,
-    filter_map_fn: Arc<dyn Fn(&T) -> Option<TargetType>>,
+    filter_map_fn: Arc<dyn Fn(&T) -> Option<TargetType> + Send + Sync>,
     usage_counter_watcher: UsageCounterWatcher,
 }
 
@@ -111,10 +111,10 @@ impl<T> ReceiverSubscriptionList<T> {
         }
     }
 
-    fn create_mapped_receiver<TargetType>(
+    fn create_mapped_receiver<TargetType: Send>(
         &self,
         usage_counter_watcher: UsageCounterWatcher,
-        filter_map_fn: Arc<dyn Fn(&T) -> Option<TargetType>>,
+        filter_map_fn: Arc<dyn Fn(&T) -> Option<TargetType> + Send + Sync>,
     ) -> Receiver<T, TargetType>
     where
         T: 'static,
@@ -182,9 +182,9 @@ impl<T> Sender<T> {
         }
     }
 
-    pub fn create_mapped_receiver<TargetType>(
+    pub fn create_mapped_receiver<TargetType: Send>(
         &self,
-        filter_map_fn: impl Fn(&T) -> Option<TargetType> + 'static,
+        filter_map_fn: impl Fn(&T) -> Option<TargetType> + Send + Sync + 'static,
     ) -> Receiver<T, TargetType>
     where
         T: 'static,
@@ -201,7 +201,7 @@ impl<T> Sender<T> {
     }
 }
 
-impl<T> Sender<T>
+impl<T: Send> Sender<T>
 where
     T: Clone + 'static,
 {
@@ -210,10 +210,10 @@ where
     }
 }
 
-impl<T> Source<T> {
-    pub fn create_mapped_receiver<TargetType>(
+impl<T: Send> Source<T> {
+    pub fn create_mapped_receiver<TargetType: Send>(
         &self,
-        filter_map_fn: impl Fn(&T) -> Option<TargetType> + 'static,
+        filter_map_fn: impl Fn(&T) -> Option<TargetType> + Send + Sync + 'static,
     ) -> Receiver<T, TargetType> {
         self.receiver.receiver_subscriptions.create_mapped_receiver(
             self.receiver.usage_counter_watcher.clone(),
@@ -224,7 +224,7 @@ impl<T> Source<T> {
 
 impl<T> Source<T>
 where
-    T: Clone + 'static,
+    T: Clone + Send + 'static,
 {
     pub fn create_receiver(&self) -> Receiver<T, T> {
         self.create_mapped_receiver(|object| Some(object.clone()))
@@ -271,7 +271,7 @@ where
 impl<T, TargetType> Clone for Receiver<T, TargetType>
 where
     T: 'static,
-    TargetType: 'static,
+    TargetType: Send + 'static,
 {
     fn clone(&self) -> Self {
         self.receiver_subscriptions.create_mapped_receiver(
