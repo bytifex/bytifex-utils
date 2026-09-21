@@ -111,14 +111,14 @@ impl<T> ReceiverSubscriptionList<T> {
         }
     }
 
-    fn create_mapped_receiver<TargetType: Send>(
+    fn create_mapped_receiver<TargetType>(
         &self,
         usage_counter_watcher: UsageCounterWatcher,
         filter_map_fn: Arc<dyn Fn(&T) -> Option<TargetType> + Send + Sync>,
     ) -> Receiver<T, TargetType>
     where
         T: 'static,
-        TargetType: 'static,
+        TargetType: Send + 'static,
     {
         let target_queue = ReceiverQueue::<TargetType>::new();
         let delivery_queue = target_queue.clone();
@@ -182,13 +182,13 @@ impl<T> Sender<T> {
         }
     }
 
-    pub fn create_mapped_receiver<TargetType: Send>(
+    pub fn create_mapped_receiver<TargetType>(
         &self,
         filter_map_fn: impl Fn(&T) -> Option<TargetType> + Send + Sync + 'static,
     ) -> Receiver<T, TargetType>
     where
         T: 'static,
-        TargetType: 'static,
+        TargetType: Send + 'static,
     {
         self.receiver_subscriptions
             .create_mapped_receiver(self.usage_counter.watcher(), Arc::new(filter_map_fn))

@@ -180,11 +180,7 @@ impl<T: Send> Drop for Receiver<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use parking_lot::Mutex;
-
-    use crate::sync::types::ArcMutex;
+    use crate::sync::types::{ArcMutex, arc_mutex_new};
 
     use super::{Receiver, channel};
 
@@ -198,7 +194,7 @@ mod tests {
     }
 
     async fn run_test(number_of_workers: usize) {
-        let received_values = Arc::new(Mutex::new(Vec::<Msg>::new()));
+        let received_values = arc_mutex_new(Vec::<Msg>::new());
 
         let (sender, receiver) = channel();
 

@@ -5,14 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use parking_lot::{Condvar, Mutex};
-
-use crate::{
-    cast::DowncastArc,
-    sync::types::{ArcMutex, arc_mutex_new},
-};
-
-type ItemTypeLock = Arc<(Mutex<bool>, Condvar)>;
+use crate::{cast::DowncastArc, sync::types::ArcMutex};
 
 pub struct SendableMultiTypeDictItem<ItemType: ?Sized> {
     type_id: TypeId,
@@ -29,14 +22,7 @@ impl<ItemType: ?Sized> Clone for SendableMultiTypeDictItem<ItemType> {
 }
 
 pub struct SendableMultiTypeDict {
-    storage: BTreeMap<TypeId, SendableMultiTypeDictItem<dyn Any + Send + Sync + 'static>>,
-    item_type_locks: ArcMutex<BTreeMap<TypeId, ItemTypeLock>>,
-}
-
-pub struct ItemTypeGuard {
-    item_type_locks: ArcMutex<BTreeMap<TypeId, ItemTypeLock>>,
-    type_id: TypeId,
-    lock: Arc<(Mutex<bool>, Condvar)>,
+    storage: ArcMutex<BTreeMap<TypeId, SendableMultiTypeDictItem<dyn Any + Send + Sync + 'static>>>,
 }
 
 pub struct SendableMultiTypeDictIterator<'a> {
@@ -59,8 +45,7 @@ impl<'a> Iterator for SendableMultiTypeDictIterator<'a> {
 impl SendableMultiTypeDict {
     pub fn new() -> Self {
         Self {
-            storage: BTreeMap::new(),
-            item_type_locks: arc_mutex_new(BTreeMap::new()),
+            storage: Default::default(),
         }
     }
 
@@ -106,7 +91,7 @@ impl SendableMultiTypeDict {
                 item: Arc::new(item),
             };
 
-        let old_item = self.storage.insert(type_id, new_item.clone());
+        let old_item = self.storage.lock().insert(type_id, new_item.clone());
 
         SendableMultiTypeDictInsertResult { new_item, old_item }
     }
@@ -128,12 +113,11 @@ impl SendableMultiTypeDict {
     where
         ItemType: Any + Send + Sync + 'static,
     {
-        let _item_type_guard = self.lock_item_type::<ItemType>();
-
         let type_id = TypeId::of::<ItemType>();
 
         let result = self
             .storage
+            .lock()
             .entry(type_id)
             .or_insert_with(|| SendableMultiTypeDictItem {
                 type_id,
@@ -153,7 +137,7 @@ impl SendableMultiTypeDict {
         &self,
         type_id: TypeId,
     ) -> Option<SendableMultiTypeDictItem<dyn Any + Send + Sync + 'static>> {
-        self.storage.get(&type_id).cloned()
+        self.storage.lock().get(&type_id).cloned()
     }
 
     pub fn remove<ItemType>(&mut self) -> Option<Arc<ItemType>>
@@ -171,40 +155,7 @@ impl SendableMultiTypeDict {
         &mut self,
         type_id: TypeId,
     ) -> Option<SendableMultiTypeDictItem<dyn Any + Send + Sync + 'static>> {
-        self.storage.remove(&type_id)
-    }
-
-    pub fn iter(&self) -> SendableMultiTypeDictIterator<'_> {
-        SendableMultiTypeDictIterator {
-            inner_iterator: self.storage.iter(),
-        }
-    }
-
-    fn lock_item_type<ItemType>(&self) -> ItemTypeGuard
-    where
-        ItemType: Any + Send + Sync + 'static,
-    {
-        let type_id = TypeId::of::<ItemType>();
-        let mut item_type_locks = self.item_type_locks.lock();
-        let entry = item_type_locks
-            .entry(type_id)
-            .or_insert_with(|| Arc::new((Mutex::new(false), Condvar::new())));
-
-        let entry = entry.clone();
-
-        drop(item_type_locks);
-
-        let mut item_type_locked = entry.0.lock();
-        while *item_type_locked {
-            entry.1.wait(&mut item_type_locked);
-        }
-        *item_type_locked = true;
-
-        ItemTypeGuard {
-            item_type_locks: self.item_type_locks.clone(),
-            type_id,
-            lock: entry.clone(),
-        }
+        self.storage.lock().remove(&type_id)
     }
 }
 
@@ -243,25 +194,9 @@ impl Default for SendableMultiTypeDict {
     }
 }
 
-impl Drop for ItemTypeGuard {
-    fn drop(&mut self) {
-        let mut item_type_locks = self.item_type_locks.lock();
-        // check that only item_type_locks and self contains this lock
-        if Arc::strong_count(&self.lock) == 2 {
-            // nobody tries to lock the item type
-            item_type_locks.remove(&self.type_id);
-        } else {
-            // somebody tries to lock the item type
-            let mut item_type_locked = self.lock.0.lock();
-            *item_type_locked = false;
-            self.lock.1.notify_one();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{any::Any, sync::Arc};
+    use std::sync::Arc;
 
     use crate::containers::sendable_multi_type_dict::SendableMultiTypeDictItem;
 
@@ -323,17 +258,6 @@ mod tests {
                 value: "B".to_string(),
             })
         );
-
-        let systems: Vec<SendableMultiTypeDictItem<dyn Any + Send + Sync + 'static>> =
-            dict.iter().collect();
-        assert_eq!(systems.len(), 2);
-        if systems[0].downcast::<A>().is_some() {
-            assert!(systems[0].downcast::<A>().is_some());
-            assert!(systems[1].downcast::<B>().is_some());
-        } else {
-            assert!(systems[0].downcast::<B>().is_some());
-            assert!(systems[1].downcast::<A>().is_some());
-        }
 
         assert_eq!(
             *dict.remove::<A>().unwrap(),

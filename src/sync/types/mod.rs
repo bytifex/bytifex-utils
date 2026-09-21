@@ -1,20 +1,20 @@
+#[cfg(not(target_arch = "wasm32"))]
+pub mod sync_parking_lot;
+pub mod sync_std;
+
 use std::{rc::Rc, sync::Arc};
 
-pub use parking_lot::{Mutex, RwLock};
-use parking_lot::{
-    MutexGuard as PLMutexGuard, RwLockReadGuard as PLRwLockReadGuard,
-    RwLockWriteGuard as PLRwLockWriteGuard,
-};
+#[cfg(not(target_arch = "wasm32"))]
+pub use sync_parking_lot::*;
+
+#[cfg(target_arch = "wasm32")]
+pub use sync_std::*;
 
 pub type RcMutex<T> = Rc<Mutex<T>>;
 pub type RcRwLock<T> = Rc<RwLock<T>>;
 
 pub type ArcMutex<T> = Arc<Mutex<T>>;
 pub type ArcRwLock<T> = Arc<RwLock<T>>;
-
-pub type MutexGuard<'a, T> = PLMutexGuard<'a, T>;
-pub type RwLockReadGuard<'a, T> = PLRwLockReadGuard<'a, T>;
-pub type RwLockWriteGuard<'a, T> = PLRwLockWriteGuard<'a, T>;
 
 pub fn rc_mutex_new<T>(object: T) -> RcMutex<T> {
     Rc::new(Mutex::new(object))

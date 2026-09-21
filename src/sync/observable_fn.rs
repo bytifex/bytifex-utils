@@ -113,16 +113,13 @@ impl<T> DerefMut for ObservableBorrower<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use closure::closure;
-    use parking_lot::RwLock;
 
-    use crate::sync::observable_fn::Observable;
+    use crate::sync::{observable_fn::Observable, types::arc_rw_lock_new};
 
     #[test]
     fn observable_borrow() {
-        let observer_value_received = Arc::new(RwLock::new(None));
+        let observer_value_received = arc_rw_lock_new(None);
 
         let mut observable = Observable::new(0);
 
@@ -144,8 +141,8 @@ mod tests {
 
     #[test]
     fn observable_set() {
-        let observer0_value_received = Arc::new(RwLock::new(None));
-        let observer1_value_received = Arc::new(RwLock::new(None));
+        let observer0_value_received = arc_rw_lock_new(None);
+        let observer1_value_received = arc_rw_lock_new(None);
 
         let mut observable = Observable::new(0);
 
