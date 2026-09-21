@@ -27,7 +27,15 @@ impl<T> Clone for ReceiverQueue<T> {
 }
 
 struct ReceiverSubscription<T> {
-    deliver: Box<dyn Fn(&T) + Send + Sync>,
+    deliver: Arc<dyn Fn(&T) + Send + Sync>,
+}
+
+impl<T> Clone for ReceiverSubscription<T> {
+    fn clone(&self) -> Self {
+        Self {
+            deliver: self.deliver.clone(),
+        }
+    }
 }
 
 crate::object_pool_index!(struct ReceiverSubscriptionIndex);
@@ -49,6 +57,7 @@ impl<T> Clone for ReceiverSubscriptionList<T> {
 pub struct Sender<T> {
     receiver_subscriptions: ReceiverSubscriptionList<T>,
     usage_counter: UsageCounter,
+    receivers_cache: Vec<ReceiverSubscription<T>>,
 }
 
 impl<T> Clone for Sender<T> {
@@ -56,6 +65,7 @@ impl<T> Clone for Sender<T> {
         Self {
             receiver_subscriptions: self.receiver_subscriptions.clone(),
             usage_counter: self.usage_counter.clone(),
+            receivers_cache: Default::default(),
         }
     }
 }
@@ -127,7 +137,7 @@ impl<T> ReceiverSubscriptionList<T> {
             .subscriptions
             .lock()
             .create_object(ReceiverSubscription {
-                deliver: Box::new(move |object| {
+                deliver: Arc::new(move |object| {
                     if let Some(target) = delivery_filter_map_fn(object) {
                         delivery_queue.add_object_if_not_stopped(target);
                     }
@@ -163,12 +173,19 @@ impl<T> Sender<T> {
         Self {
             receiver_subscriptions: ReceiverSubscriptionList::new(),
             usage_counter: UsageCounter::new(),
+            receivers_cache: Default::default(),
         }
     }
 
-    pub fn send(&self, object: T) {
+    pub fn send(&mut self, object: T) {
         self.receiver_subscriptions.handle_to_be_removed();
-        for receiver in self.receiver_subscriptions.subscriptions.lock().iter() {
+
+        self.receivers_cache = {
+            let subscriptions = self.receiver_subscriptions.subscriptions.lock();
+            subscriptions.iter().cloned().collect::<Vec<_>>()
+        };
+
+        for receiver in self.receivers_cache.drain(..) {
             (receiver.deliver)(&object);
         }
     }
@@ -177,6 +194,8 @@ impl<T> Sender<T> {
     where
         TargetType: 'static,
     {
+        self.receiver_subscriptions.handle_to_be_removed();
+
         if let Some(target) = (receiver.filter_map_fn)(&object) {
             receiver.queue.add_object_if_not_stopped(target);
         }
@@ -300,7 +319,7 @@ mod tests {
 
     #[tokio::test]
     async fn send() {
-        let sender = Sender::<String>::new();
+        let mut sender = Sender::<String>::new();
 
         let receiver0 = sender.create_receiver();
         let receiver1 = sender.create_receiver();
@@ -308,7 +327,7 @@ mod tests {
         sender.send("0".to_string());
         sender.send("1".to_string());
         {
-            let sender = sender.clone();
+            let mut sender = sender.clone();
             sender.send("2".to_string());
             sender.send("3".to_string());
             sender.send("4".to_string());
@@ -353,7 +372,7 @@ mod tests {
 
     #[test]
     fn send_to_mapped_receiver() {
-        let sender = Sender::<String>::new();
+        let mut sender = Sender::<String>::new();
         let receiver = sender.create_mapped_receiver(|object| {
             object.parse::<usize>().ok().filter(|value| value % 2 == 0)
         });
@@ -370,7 +389,7 @@ mod tests {
 
     #[test]
     fn cloned_mapped_receiver_preserves_filter_map() {
-        let sender = Sender::<String>::new();
+        let mut sender = Sender::<String>::new();
         let receiver0 = sender
             .create_mapped_receiver(|object| object.strip_prefix("id:").map(str::to_uppercase));
         let receiver1 = receiver0.clone();
@@ -386,7 +405,7 @@ mod tests {
 
     #[test]
     fn mapped_receiver_stop_and_resume() {
-        let sender = Sender::<usize>::new();
+        let mut sender = Sender::<usize>::new();
         let mut receiver = sender.create_mapped_receiver(|value| value.checked_mul(2));
 
         sender.send(1);
@@ -404,7 +423,7 @@ mod tests {
     fn mapped_receiver_supports_non_clone_target() {
         struct NonCloneTarget(usize);
 
-        let sender = Sender::<usize>::new();
+        let mut sender = Sender::<usize>::new();
         let receiver = sender.create_mapped_receiver(|value| Some(NonCloneTarget(*value)));
 
         sender.send(7);
@@ -414,7 +433,7 @@ mod tests {
 
     #[test]
     fn send_stop_send_resume_send() {
-        let sender = Sender::<String>::new();
+        let mut sender = Sender::<String>::new();
 
         let mut receiver = sender.create_receiver();
 
@@ -437,7 +456,7 @@ mod tests {
 
     #[test]
     fn drop_receiver() {
-        let sender = Sender::<String>::new();
+        let mut sender = Sender::<String>::new();
 
         {
             let _receiver = sender.create_receiver();
@@ -454,7 +473,7 @@ mod tests {
     #[tokio::test]
     async fn drop_sender() {
         let (receiver0, receiver1, source) = {
-            let sender = Sender::<usize>::new();
+            let mut sender = Sender::<usize>::new();
             let source = sender.create_source();
             let ret = (sender.create_receiver(), source.create_receiver(), source);
 

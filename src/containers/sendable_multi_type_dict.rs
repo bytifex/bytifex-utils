@@ -198,8 +198,6 @@ impl Default for SendableMultiTypeDict {
 mod tests {
     use std::sync::Arc;
 
-    use crate::containers::sendable_multi_type_dict::SendableMultiTypeDictItem;
-
     use super::SendableMultiTypeDict;
 
     #[derive(Debug, Eq, PartialEq)]
