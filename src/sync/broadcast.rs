@@ -472,7 +472,7 @@ mod tests {
 
     #[tokio::test]
     async fn drop_sender() {
-        let (receiver0, receiver1, source) = {
+        let (mut receiver0, receiver1, source) = {
             let mut sender = Sender::<usize>::new();
             let source = sender.create_source();
             let ret = (sender.create_receiver(), source.create_receiver(), source);
@@ -487,8 +487,14 @@ mod tests {
         assert_eq!(receiver0.try_pop().unwrap(), Some(7));
         assert_eq!(receiver1.try_pop().unwrap(), Some(7));
 
+        receiver0.stop();
+        assert_eq!(receiver0.try_pop(), Err(SenderDropped));
         assert_eq!(receiver0.pop().await, Err(SenderDropped));
+
         assert_eq!(receiver1.try_pop(), Err(SenderDropped));
+        assert_eq!(receiver1.pop().await, Err(SenderDropped));
+
         assert_eq!(receiver2.try_pop(), Err(SenderDropped));
+        assert_eq!(receiver2.pop().await, Err(SenderDropped));
     }
 }
