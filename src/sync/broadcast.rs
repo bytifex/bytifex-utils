@@ -28,12 +28,14 @@ impl<T> Clone for ReceiverQueue<T> {
 
 struct ReceiverSubscription<T> {
     deliver: Arc<dyn Fn(&T) + Send + Sync>,
+    notify: Arc<Notify>,
 }
 
 impl<T> Clone for ReceiverSubscription<T> {
     fn clone(&self) -> Self {
         Self {
             deliver: self.deliver.clone(),
+            notify: self.notify.clone(),
         }
     }
 }
@@ -133,6 +135,7 @@ impl<T> ReceiverSubscriptionList<T> {
         let target_queue = ReceiverQueue::<TargetType>::new();
         let delivery_queue = target_queue.clone();
         let delivery_filter_map_fn = filter_map_fn.clone();
+        let notify = target_queue.notify.clone();
         let queue_id = self
             .subscriptions
             .lock()
@@ -142,6 +145,7 @@ impl<T> ReceiverSubscriptionList<T> {
                         delivery_queue.add_object_if_not_stopped(target);
                     }
                 }),
+                notify,
             });
         Receiver {
             receiver_subscriptions: self.clone(),
@@ -158,6 +162,22 @@ impl<T> ReceiverSubscriptionList<T> {
         let mut to_be_removed_guard = self.to_be_removed.lock();
         while let Some(id) = to_be_removed_guard.pop() {
             receiver_subscriptions_guard.release_object(id);
+        }
+    }
+}
+
+impl<T> Drop for Sender<T> {
+    fn drop(&mut self) {
+        if !self.usage_counter.is_this_the_last() {
+            return;
+        }
+
+        // release the counter before notifying so woken receivers observe the drop.
+        let usage_counter = std::mem::take(&mut self.usage_counter);
+        drop(usage_counter);
+
+        for subscription in self.receiver_subscriptions.subscriptions.lock().iter() {
+            subscription.notify.notify_waiters();
         }
     }
 }
@@ -315,6 +335,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[tokio::test]
@@ -478,6 +500,17 @@ mod tests {
             let ret = (sender.create_receiver(), source.create_receiver(), source);
 
             sender.send(7);
+
+            let receiver = sender.create_receiver();
+            let receiver_handle = tokio::spawn(async move {
+                assert!(receiver.pop().await.is_err());
+            });
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            drop(sender);
+
+            receiver_handle.await.unwrap();
 
             ret
         };
