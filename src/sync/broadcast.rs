@@ -10,6 +10,19 @@ use super::{
     usage_counter::{UsageCounter, UsageCounterWatcher},
 };
 
+pub trait FilterMapFn<T, TargetType>: Send + Sync {
+    fn filter_map(&self, item: &T) -> Option<TargetType>;
+}
+
+impl<T, TargetType, F> FilterMapFn<T, TargetType> for F
+where
+    F: Fn(&T) -> Option<TargetType> + Send + Sync,
+{
+    fn filter_map(&self, item: &T) -> Option<TargetType> {
+        (self)(item)
+    }
+}
+
 struct ReceiverQueue<T> {
     queue: ArcMutex<VecDeque<T>>,
     is_stopped: ArcMutex<bool>,
@@ -92,7 +105,7 @@ where
     receiver_subscriptions: ReceiverSubscriptionList<T>,
     queue_id: ReceiverSubscriptionIndex,
     queue: ReceiverQueue<TargetType>,
-    filter_map_fn: Arc<dyn Fn(&T) -> Option<TargetType> + Send + Sync>,
+    filter_map_fn: Arc<dyn FilterMapFn<T, TargetType>>,
     usage_counter_watcher: UsageCounterWatcher,
 }
 
@@ -126,7 +139,7 @@ impl<T> ReceiverSubscriptionList<T> {
     fn create_mapped_receiver<TargetType>(
         &self,
         usage_counter_watcher: UsageCounterWatcher,
-        filter_map_fn: Arc<dyn Fn(&T) -> Option<TargetType> + Send + Sync>,
+        filter_map_fn: Arc<dyn FilterMapFn<T, TargetType>>,
     ) -> Receiver<T, TargetType>
     where
         T: 'static,
@@ -141,7 +154,7 @@ impl<T> ReceiverSubscriptionList<T> {
             .lock()
             .create_object(ReceiverSubscription {
                 deliver: Arc::new(move |object| {
-                    if let Some(target) = delivery_filter_map_fn(object) {
+                    if let Some(target) = delivery_filter_map_fn.filter_map(object) {
                         delivery_queue.add_object_if_not_stopped(target);
                     }
                 }),
@@ -216,14 +229,14 @@ impl<T> Sender<T> {
     {
         self.receiver_subscriptions.handle_to_be_removed();
 
-        if let Some(target) = (receiver.filter_map_fn)(&object) {
+        if let Some(target) = receiver.filter_map_fn.filter_map(&object) {
             receiver.queue.add_object_if_not_stopped(target);
         }
     }
 
     pub fn create_mapped_receiver<TargetType>(
         &self,
-        filter_map_fn: impl Fn(&T) -> Option<TargetType> + Send + Sync + 'static,
+        filter_map_fn: impl FilterMapFn<T, TargetType> + 'static,
     ) -> Receiver<T, TargetType>
     where
         T: 'static,
@@ -234,7 +247,7 @@ impl<T> Sender<T> {
     }
 
     pub fn create_source(&self) -> Source<T> {
-        let mut receiver = self.create_mapped_receiver(|_| None);
+        let mut receiver = self.create_mapped_receiver(|_: &T| None);
         receiver.stop();
         Source { receiver }
     }
@@ -245,14 +258,14 @@ where
     T: Clone + 'static,
 {
     pub fn create_receiver(&self) -> Receiver<T, T> {
-        self.create_mapped_receiver(|object| Some(object.clone()))
+        self.create_mapped_receiver(|object: &T| Some(object.clone()))
     }
 }
 
 impl<T: Send> Source<T> {
     pub fn create_mapped_receiver<TargetType: Send>(
         &self,
-        filter_map_fn: impl Fn(&T) -> Option<TargetType> + Send + Sync + 'static,
+        filter_map_fn: impl FilterMapFn<T, TargetType> + 'static,
     ) -> Receiver<T, TargetType> {
         self.receiver.receiver_subscriptions.create_mapped_receiver(
             self.receiver.usage_counter_watcher.clone(),
@@ -266,7 +279,7 @@ where
     T: Clone + Send + 'static,
 {
     pub fn create_receiver(&self) -> Receiver<T, T> {
-        self.create_mapped_receiver(|object| Some(object.clone()))
+        self.create_mapped_receiver(|object: &T| Some(object.clone()))
     }
 }
 
@@ -395,7 +408,7 @@ mod tests {
     #[test]
     fn send_to_mapped_receiver() {
         let mut sender = Sender::<String>::new();
-        let receiver = sender.create_mapped_receiver(|object| {
+        let receiver = sender.create_mapped_receiver(|object: &String| {
             object.parse::<usize>().ok().filter(|value| value % 2 == 0)
         });
 
@@ -412,8 +425,9 @@ mod tests {
     #[test]
     fn cloned_mapped_receiver_preserves_filter_map() {
         let mut sender = Sender::<String>::new();
-        let receiver0 = sender
-            .create_mapped_receiver(|object| object.strip_prefix("id:").map(str::to_uppercase));
+        let receiver0 = sender.create_mapped_receiver(|object: &String| {
+            object.strip_prefix("id:").map(str::to_uppercase)
+        });
         let receiver1 = receiver0.clone();
 
         sender.send("id:one".to_string());
@@ -428,7 +442,7 @@ mod tests {
     #[test]
     fn mapped_receiver_stop_and_resume() {
         let mut sender = Sender::<usize>::new();
-        let mut receiver = sender.create_mapped_receiver(|value| value.checked_mul(2));
+        let mut receiver = sender.create_mapped_receiver(|value: &usize| value.checked_mul(2));
 
         sender.send(1);
         receiver.stop();
@@ -446,7 +460,7 @@ mod tests {
         struct NonCloneTarget(usize);
 
         let mut sender = Sender::<usize>::new();
-        let receiver = sender.create_mapped_receiver(|value| Some(NonCloneTarget(*value)));
+        let receiver = sender.create_mapped_receiver(|value: &usize| Some(NonCloneTarget(*value)));
 
         sender.send(7);
 
