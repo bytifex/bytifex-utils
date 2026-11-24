@@ -1,5 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::mem::DropGuard;
 
 use or_die::OrDie;
 
@@ -110,6 +111,14 @@ struct ObjectWrapper<T> {
     object: Option<T>,
 }
 
+/// The largest version a free slot may have and still be reused.
+///
+/// Live objects have odd versions, free slots even ones. Reusing a free slot issues
+/// `version + 1` and releasing it again gives `version + 2`, which must not overflow: a wrapped
+/// version would eventually repeat an old one, letting a stale handle match a recycled slot
+/// (ABA). Slots past this limit are retired, i.e. never reused.
+const MAX_REUSABLE_RELEASED_VERSION: isize = isize::MAX - 3;
+
 pub struct ObjectPool<T, IndexType: ObjectPoolIndex> {
     objects: Vec<ObjectWrapper<T>>,
     free_slots: BinaryHeap<Reverse<usize>>,
@@ -177,44 +186,52 @@ impl<T, IndexType: ObjectPoolIndex> ObjectPool<T, IndexType> {
         &mut self,
         f: impl FnOnce(&IndexType) -> Result<T, ErrorType>,
     ) -> Result<(IndexType, &T), ErrorType> {
-        // pop should be issued after the call to f because it may panic!
-        let (index, pool_index) = match self.free_slots.peek() {
-            Some(Reverse(index)) => {
-                let index = *index;
-                let obj = &mut self.objects[index];
-
-                let pool_index: IndexType = DefaultObjectPoolIndex {
-                    index,
-                    version: obj.version + 1,
-                }
-                .into();
-
-                // call to f may panic! therefore using pop
-                obj.object = Some(f(&pool_index)?);
-                obj.version += 1;
-                self.free_slots.pop();
-                self.number_of_items += 1;
-
-                (index, pool_index)
-            }
+        // Reserve a free slot. A fresh slot is pushed as a free placeholder (version 0), so both
+        // cases are handled identically from here on.
+        let index = match self.free_slots.peek() {
+            Some(&Reverse(index)) => index,
             None => {
                 let index = self.objects.len();
-                let version = 1;
-
-                let pool_index: IndexType = DefaultObjectPoolIndex { index, version }.into();
-
                 self.objects.push(ObjectWrapper {
-                    version,
-                    object: Some(f(&pool_index)?),
+                    version: 0,
+                    object: None,
                 });
-
-                self.number_of_items += 1;
-
-                (index, pool_index)
+                self.free_slots.push(Reverse(index));
+                index
             }
         };
 
-        Ok((pool_index, self.objects[index].object.as_ref().or_die()))
+        let version = self.objects[index].version + 1;
+        let pool_index: IndexType = DefaultObjectPoolIndex { index, version }.into();
+
+        // `f` sees the handle before the slot is committed and may keep a copy of it. If `f`
+        // fails or panics, the guard burns that version so it is never issued again.
+        let guard = DropGuard::new(&mut *self, |pool: &mut Self| pool.burn_reserved_slot(index));
+        let value = f(&pool_index)?;
+        let pool = DropGuard::dismiss(guard);
+
+        pool.free_slots.pop();
+        pool.number_of_items += 1;
+
+        let obj = &mut pool.objects[index];
+        obj.object = Some(value);
+        obj.version = version;
+
+        Ok((pool_index, obj.object.as_ref().or_die()))
+    }
+
+    /// Burns the version handed out for the free slot `index` (the top of `free_slots`) by a
+    /// `create_object_with_fn` call whose callback failed or panicked.
+    fn burn_reserved_slot(&mut self, index: usize) {
+        let obj = &mut self.objects[index];
+        // a free slot's version is even and at most MAX_REUSABLE_RELEASED_VERSION, so adding 2
+        // keeps it even (free) and cannot overflow
+        obj.version += 2;
+        if obj.version > MAX_REUSABLE_RELEASED_VERSION {
+            // retire the slot; the callback cannot touch the pool, so it is still on top
+            let retired = self.free_slots.pop();
+            debug_assert_eq!(retired, Some(Reverse(index)));
+        }
     }
 
     pub fn release_object(&mut self, index: IndexType) -> Option<T> {
@@ -222,8 +239,12 @@ impl<T, IndexType: ObjectPoolIndex> ObjectPool<T, IndexType> {
         if index.index < self.objects.len() {
             let obj = &mut self.objects[index.index];
             if obj.version == index.version {
+                // a matching version is odd (live) and at most MAX_REUSABLE_RELEASED_VERSION + 1,
+                // so this cannot overflow
                 obj.version += 1;
-                self.free_slots.push(Reverse(index.index));
+                if obj.version <= MAX_REUSABLE_RELEASED_VERSION {
+                    self.free_slots.push(Reverse(index.index));
+                }
 
                 self.number_of_items -= 1;
 
@@ -515,6 +536,144 @@ mod tests {
 
         assert_eq!(pool.release_object(index2), Some("item2".to_string()));
         assert!(pool.release_object(index2).is_none());
+    }
+
+    /// Calls `create_object_with_fn` with a callback that leaks its handle and then fails.
+    fn leak_handle_and_fail(
+        pool: &mut ObjectPool<String, DefaultObjectPoolIndex>,
+    ) -> DefaultObjectPoolIndex {
+        let mut leaked = DefaultObjectPoolIndex::invalid();
+        let result = pool.create_object_with_fn(|index| {
+            leaked = *index;
+            Err::<String, ()>(())
+        });
+        assert!(result.is_err());
+        leaked
+    }
+
+    #[test]
+    fn failed_create_with_fn_on_fresh_slot_burns_handle() {
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
+
+        let leaked = leak_handle_and_fail(&mut pool);
+        assert_eq!(pool.len(), 0);
+        assert_eq!(pool.iter().count(), 0);
+        assert_eq!(pool.first_index(), None);
+
+        let index = pool.create_object("item0".to_string());
+        assert_ne!(index, leaked);
+        assert_eq!(pool.get_ref(leaked), None);
+        assert_eq!(pool.release_object(leaked), None);
+        assert_eq!(pool.get_ref(index).cloned(), Some("item0".to_string()));
+    }
+
+    #[test]
+    fn failed_create_with_fn_on_free_slot_burns_handle() {
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
+
+        let index0 = pool.create_object("item0".to_string());
+        assert_eq!(pool.release_object(index0), Some("item0".to_string()));
+
+        let leaked = leak_handle_and_fail(&mut pool);
+        assert_eq!(pool.len(), 0);
+
+        let index = pool
+            .create_object_with_fn(|_index| Ok("item1".to_string()))
+            .infallible()
+            .0;
+        // the free slot is still reused, but with a version the callback never saw
+        assert_eq!(
+            index,
+            DefaultObjectPoolIndex {
+                index: 0,
+                version: 5
+            }
+        );
+        assert_eq!(pool.get_ref(leaked), None);
+        assert_eq!(pool.release_object(leaked), None);
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn panicking_create_with_fn_burns_handle() {
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
+
+        let mut leaked = DefaultObjectPoolIndex::invalid();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = pool.create_object_with_fn(|index| -> Result<String, ()> {
+                leaked = *index;
+                panic!("callback panicked");
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(pool.len(), 0);
+
+        let index = pool.create_object("item0".to_string());
+        assert_ne!(index, leaked);
+        assert_eq!(pool.get_ref(leaked), None);
+    }
+
+    #[test]
+    fn slot_is_retired_before_version_overflow() {
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
+        let _index0 = pool.create_object("item0".to_string());
+
+        // fast-forward slot 0 to the last version that may still be reused
+        pool.objects[0].version = MAX_REUSABLE_RELEASED_VERSION - 1;
+        let index = DefaultObjectPoolIndex {
+            index: 0,
+            version: MAX_REUSABLE_RELEASED_VERSION - 1,
+        };
+        assert_eq!(pool.release_object(index), Some("item0".to_string()));
+
+        let index = pool.create_object("reused".to_string());
+        assert_eq!(
+            index,
+            DefaultObjectPoolIndex {
+                index: 0,
+                version: MAX_REUSABLE_RELEASED_VERSION + 1
+            }
+        );
+
+        // the next reuse would come too close to overflow: the slot is retired
+        assert_eq!(pool.release_object(index), Some("reused".to_string()));
+        let index = pool.create_object("fresh".to_string());
+        assert_eq!(
+            index,
+            DefaultObjectPoolIndex {
+                index: 1,
+                version: 1
+            }
+        );
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn failed_create_with_fn_retires_slot_near_overflow() {
+        let mut pool = ObjectPool::<String, DefaultObjectPoolIndex>::new();
+        let _index0 = pool.create_object("item0".to_string());
+
+        // slot 0 is free with the highest reusable version
+        pool.objects[0].version = MAX_REUSABLE_RELEASED_VERSION - 1;
+        let index = DefaultObjectPoolIndex {
+            index: 0,
+            version: MAX_REUSABLE_RELEASED_VERSION - 1,
+        };
+        assert_eq!(pool.release_object(index), Some("item0".to_string()));
+
+        // burning a version pushes the slot past the limit, so it must be retired
+        let leaked = leak_handle_and_fail(&mut pool);
+        assert_eq!(leaked.index, 0);
+
+        let index = pool.create_object("fresh".to_string());
+        assert_eq!(
+            index,
+            DefaultObjectPoolIndex {
+                index: 1,
+                version: 1
+            }
+        );
+        assert_eq!(pool.get_ref(leaked), None);
     }
 
     #[test]

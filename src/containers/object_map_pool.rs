@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 use super::object_pool::{DefaultObjectPoolIndex, ObjectPool, ObjectPoolIter, ObjectPoolIterMut};
 
@@ -66,10 +67,23 @@ where
         }
     }
 
-    pub fn create_object(&mut self, key: KeyType, value: ValueType) -> ObjectMapPoolIndex {
-        let index = self.object_pool.create_object((key.clone(), value));
-        self.map_of_indices.insert(key, index);
-        index
+    /// Stores `value` under `key` and returns its index.
+    ///
+    /// Keys are unique: if an object with an equal key already exists, it is kept unchanged,
+    /// nothing is stored and `value` is handed back as the error.
+    pub fn create_object(
+        &mut self,
+        key: KeyType,
+        value: ValueType,
+    ) -> Result<ObjectMapPoolIndex, ValueType> {
+        match self.map_of_indices.entry(key) {
+            Entry::Occupied(_) => Err(value),
+            Entry::Vacant(entry) => {
+                let index = self.object_pool.create_object((entry.key().clone(), value));
+                entry.insert(index);
+                Ok(index)
+            }
+        }
     }
 
     pub fn release_object_by_index(
@@ -196,11 +210,11 @@ mod tests {
     fn create_release_create() {
         let mut pool = ObjectMapPool::<isize, String>::new();
 
-        let index0 = pool.create_object(0, "item0".to_string());
-        let _index1 = pool.create_object(1, "item1".to_string());
-        let index2 = pool.create_object(2, "item2".to_string());
-        let _index3 = pool.create_object(3, "item3".to_string());
-        let index4 = pool.create_object(4, "item4".to_string());
+        let index0 = pool.create_object(0, "item0".to_string()).unwrap();
+        let _index1 = pool.create_object(1, "item1".to_string()).unwrap();
+        let index2 = pool.create_object(2, "item2".to_string()).unwrap();
+        let _index3 = pool.create_object(3, "item3".to_string()).unwrap();
+        let index4 = pool.create_object(4, "item4".to_string()).unwrap();
 
         assert_eq!(
             pool.get_ref_by_index(index0),
@@ -230,7 +244,7 @@ mod tests {
             Some((4, "item4".to_string()))
         );
 
-        let index5 = pool.create_object(5, "item5".to_string());
+        let index5 = pool.create_object(5, "item5".to_string()).unwrap();
         assert_eq!(
             pool.get_ref_by_index(index5),
             Some((&5, &"item5".to_string()))
@@ -241,11 +255,11 @@ mod tests {
     fn accessing_released_object() {
         let mut pool = ObjectMapPool::<isize, String>::new();
 
-        let _index0 = pool.create_object(0, "item0".to_string());
-        let index1 = pool.create_object(1, "item1".to_string());
-        let index2 = pool.create_object(2, "item2".to_string());
-        let _index3 = pool.create_object(3, "item3".to_string());
-        let _index4 = pool.create_object(4, "item4".to_string());
+        let _index0 = pool.create_object(0, "item0".to_string()).unwrap();
+        let index1 = pool.create_object(1, "item1".to_string()).unwrap();
+        let index2 = pool.create_object(2, "item2".to_string()).unwrap();
+        let _index3 = pool.create_object(3, "item3".to_string()).unwrap();
+        let _index4 = pool.create_object(4, "item4".to_string()).unwrap();
 
         assert_eq!(pool.len(), 5);
 
@@ -277,11 +291,11 @@ mod tests {
     fn releasing_invalid_index() {
         let mut pool = ObjectMapPool::<isize, String>::new();
 
-        let _index0 = pool.create_object(0, "item0".to_string());
-        let _index1 = pool.create_object(1, "item1".to_string());
-        let index2 = pool.create_object(2, "item2".to_string());
-        let _index3 = pool.create_object(3, "item3".to_string());
-        let _index4 = pool.create_object(4, "item4".to_string());
+        let _index0 = pool.create_object(0, "item0".to_string()).unwrap();
+        let _index1 = pool.create_object(1, "item1".to_string()).unwrap();
+        let index2 = pool.create_object(2, "item2".to_string()).unwrap();
+        let _index3 = pool.create_object(3, "item3".to_string()).unwrap();
+        let _index4 = pool.create_object(4, "item4".to_string()).unwrap();
 
         assert_eq!(
             pool.release_object_by_index(index2),
@@ -314,11 +328,11 @@ mod tests {
     fn iterate_ref() {
         let mut pool = ObjectMapPool::<isize, String>::new();
 
-        let _index0 = pool.create_object(0, "item0".to_string());
-        let index1 = pool.create_object(1, "item1".to_string());
-        let _index2 = pool.create_object(2, "item2".to_string());
-        let _index3 = pool.create_object(3, "item3".to_string());
-        let index4 = pool.create_object(4, "item4".to_string());
+        let _index0 = pool.create_object(0, "item0".to_string()).unwrap();
+        let index1 = pool.create_object(1, "item1".to_string()).unwrap();
+        let _index2 = pool.create_object(2, "item2".to_string()).unwrap();
+        let _index3 = pool.create_object(3, "item3".to_string()).unwrap();
+        let index4 = pool.create_object(4, "item4".to_string()).unwrap();
 
         {
             let mut counter = 0;
@@ -369,11 +383,11 @@ mod tests {
     fn iterate_mut() {
         let mut pool = ObjectMapPool::<isize, String>::new();
 
-        let index0 = pool.create_object(0, "item0".to_string());
-        let _index1 = pool.create_object(1, "item1".to_string());
-        let _index2 = pool.create_object(2, "item2".to_string());
-        let index3 = pool.create_object(3, "item3".to_string());
-        let _index4 = pool.create_object(4, "item4".to_string());
+        let index0 = pool.create_object(0, "item0".to_string()).unwrap();
+        let _index1 = pool.create_object(1, "item1".to_string()).unwrap();
+        let _index2 = pool.create_object(2, "item2".to_string()).unwrap();
+        let index3 = pool.create_object(3, "item3".to_string()).unwrap();
+        let _index4 = pool.create_object(4, "item4".to_string()).unwrap();
 
         {
             let mut counter = 0;
@@ -435,12 +449,12 @@ mod tests {
     fn first_index() {
         let mut pool = ObjectMapPool::<isize, String>::new();
 
-        let index0 = pool.create_object(0, "item0".to_string());
-        let index1 = pool.create_object(1, "item1".to_string());
-        let _index2 = pool.create_object(2, "item1".to_string());
-        let index3 = pool.create_object(3, "item2".to_string());
-        let _index4 = pool.create_object(4, "item2".to_string());
-        let _index5 = pool.create_object(5, "item2".to_string());
+        let index0 = pool.create_object(0, "item0".to_string()).unwrap();
+        let index1 = pool.create_object(1, "item1".to_string()).unwrap();
+        let _index2 = pool.create_object(2, "item1".to_string()).unwrap();
+        let index3 = pool.create_object(3, "item2".to_string()).unwrap();
+        let _index4 = pool.create_object(4, "item2".to_string()).unwrap();
+        let _index5 = pool.create_object(5, "item2".to_string()).unwrap();
 
         assert_eq!(
             pool.find_first_index(|_key, value| value == "item0"),
@@ -468,8 +482,8 @@ mod tests {
     fn next_index_finds_immediate_next() {
         let mut pool = ObjectMapPool::<isize, String>::new();
 
-        let _index0 = pool.create_object(0, "item0".to_string());
-        let index1 = pool.create_object(1, "item1".to_string());
+        let _index0 = pool.create_object(0, "item0".to_string()).unwrap();
+        let index1 = pool.create_object(1, "item1".to_string()).unwrap();
         let first = pool.first_index().unwrap();
 
         assert_eq!(first.next_index(&pool), Some(index1));
@@ -480,10 +494,10 @@ mod tests {
     fn next_index_skips_released_slots() {
         let mut pool = ObjectMapPool::<isize, String>::new();
 
-        let _index0 = pool.create_object(0, "item0".to_string());
-        let index1 = pool.create_object(1, "item1".to_string());
-        let index2 = pool.create_object(2, "item2".to_string());
-        let index3 = pool.create_object(3, "item3".to_string());
+        let _index0 = pool.create_object(0, "item0".to_string()).unwrap();
+        let index1 = pool.create_object(1, "item1".to_string()).unwrap();
+        let index2 = pool.create_object(2, "item2".to_string()).unwrap();
+        let index3 = pool.create_object(3, "item3".to_string()).unwrap();
         let first = pool.first_index().unwrap();
 
         assert_eq!(
@@ -503,9 +517,9 @@ mod tests {
     fn next_index_from_stale_handle_uses_position_not_version() {
         let mut pool = ObjectMapPool::<isize, String>::new();
 
-        let index0 = pool.create_object(0, "item0".to_string());
-        let index1 = pool.create_object(1, "item1".to_string());
-        let index2 = pool.create_object(2, "item2".to_string());
+        let index0 = pool.create_object(0, "item0".to_string()).unwrap();
+        let index1 = pool.create_object(1, "item1".to_string()).unwrap();
+        let index2 = pool.create_object(2, "item2".to_string()).unwrap();
         let first = pool.first_index().unwrap();
 
         assert_eq!(
@@ -515,5 +529,29 @@ mod tests {
 
         assert_eq!(first.next_index(&pool), Some(index1));
         assert_eq!(index1.next_index(&pool), Some(index2));
+    }
+
+    #[test]
+    fn create_with_existing_key_keeps_existing_object() {
+        let mut pool = ObjectMapPool::<isize, String>::new();
+
+        let index_a = pool.create_object(7, "A".to_string()).unwrap();
+
+        // the new value is handed back, the existing object is untouched
+        assert_eq!(pool.create_object(7, "B".to_string()), Err("B".to_string()));
+        assert_eq!(pool.len(), 1);
+        assert_eq!(pool.iter().count(), 1);
+        assert_eq!(pool.get_ref_by_index(index_a), Some((&7, &"A".to_string())));
+        assert_eq!(pool.get_ref_by_key(&7), Some((&7, &"A".to_string())));
+
+        // after releasing, the key can be used again and the old index stays invalid
+        assert_eq!(
+            pool.release_object_by_index(index_a),
+            Some((7, "A".to_string()))
+        );
+        let index_b = pool.create_object(7, "B".to_string()).unwrap();
+        assert_ne!(index_a, index_b);
+        assert_eq!(pool.release_object_by_index(index_a), None);
+        assert_eq!(pool.get_ref_by_key(&7), Some((&7, &"B".to_string())));
     }
 }
